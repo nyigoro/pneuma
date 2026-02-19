@@ -17,5 +17,5 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 pneuma-broker = { path = "../pneuma-broker" }
-pneuma-js = { path = "../pneuma-js" }
+pneuma-js = { path = "../pneuma-js", features = ["quickjs"] }
 pneuma-engines = { path = "../pneuma-engines" }

@@ -30,17 +30,19 @@ async fn run_script(script: std::path::PathBuf, engine: cli::EngineChoice, steal
     let source = std::fs::read_to_string(&script)?;
 
     let _broker = pneuma_broker::Broker::new(engine.into(), stealth)?;
-    let _runtime = pneuma_js::Runtime::new()?;
+    let runtime = pneuma_js::Runtime::new()?;
+    runtime.execute_script(&source)?;
 
-    tracing::info!(path = ?script, "executing script");
-    println!("{}", source);
+    tracing::info!(backend = runtime.backend_name(), path = ?script, "executed script");
 
     Ok(())
 }
 
 async fn eval_expression(expr: String) -> Result<()> {
     tracing::info!("evaluating expression");
-    println!("eval: {}", expr);
+    let runtime = pneuma_js::Runtime::new()?;
+    let rendered = runtime.eval_expression(&expr)?;
+    println!("{rendered}");
     Ok(())
 }
 
