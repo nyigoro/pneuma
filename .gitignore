@@ -1,1 +1,6 @@
 /target
+
+# Local Servo download artifacts (do not commit)
+/servo-*.exe
+/servo-*.tar.gz
+/servo-*.sha256

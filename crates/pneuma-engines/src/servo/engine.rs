@@ -341,72 +341,169 @@ Set SERVO_WEBDRIVER_URL to a valid endpoint or start Servo manually."
 
 async fn create_session(client: &reqwest::Client, base_url: &str) -> Result<String> {
     let session_url = format!("{base_url}/session");
-    let w3c_payload = json!({
-        "capabilities": {
-            "alwaysMatch": {}
+    let attempts = vec![
+        ("w3c-bare", json!({ "capabilities": {} })),
+        (
+            "w3c-full",
+            json!({
+                "capabilities": {
+                    "alwaysMatch": {},
+                    "firstMatch": [{}]
+                }
+            }),
+        ),
+        ("legacy", json!({ "desiredCapabilities": {} })),
+    ];
+
+    let mut last_status = String::new();
+    let mut last_error = String::new();
+    let mut last_body = Value::Null;
+    let mut session_already_started = false;
+
+    for (mode, payload) in attempts {
+        let response = client
+            .post(&session_url)
+            .json(&payload)
+            .send()
+            .await
+            .with_context(|| format!("failed to create WebDriver session ({mode})"))?;
+
+        let status = response.status();
+        let body: Value = response
+            .json()
+            .await
+            .with_context(|| format!("failed to decode session response body ({mode})"))?;
+
+        tracing::debug!(
+            target: "pneuma_engines",
+            mode,
+            %status,
+            body = ?body,
+            "session creation attempt"
+        );
+
+        if status.is_success() {
+            return extract_session_id(&body);
         }
-    });
 
-    let first_response = client
-        .post(&session_url)
-        .json(&w3c_payload)
-        .send()
-        .await
-        .context("failed to create WebDriver session with W3C payload")?;
-    let first_status = first_response.status();
-    let first_body: Value = first_response
-        .json()
-        .await
-        .context("failed to decode W3C WebDriver session response body")?;
-    tracing::debug!(
-        target: "pneuma_engines",
-        mode = "w3c",
-        %first_status,
-        body = ?first_body,
-        "session creation response body"
-    );
+        if is_session_already_started(&body) {
+            session_already_started = true;
+            if let Some(existing_session_id) = body
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    body.get("value")
+                        .and_then(|value| value.get("sessionId"))
+                        .and_then(Value::as_str)
+                })
+            {
+                tracing::info!(
+                    target: "pneuma_engines",
+                    session_id = %existing_session_id,
+                    "reusing Servo WebDriver session id from create-session error response"
+                );
+                return Ok(existing_session_id.to_string());
+            }
 
-    if first_status.is_success() {
-        return extract_session_id(&first_body);
+            if let Some(existing_session_id) = find_existing_session_id(client, base_url).await? {
+                tracing::info!(
+                    target: "pneuma_engines",
+                    session_id = %existing_session_id,
+                    "reusing existing Servo WebDriver session"
+                );
+                return Ok(existing_session_id);
+            }
+        }
+
+        last_status = status.to_string();
+        last_error = format_wd_error(&body);
+        last_body = body;
     }
 
-    tracing::debug!(
-        target: "pneuma_engines",
-        status = %first_status,
-        error = %format_wd_error(&first_body),
-        "W3C session creation failed, retrying with legacy payload"
-    );
-
-    let legacy_payload = json!({
-        "desiredCapabilities": {}
-    });
-    let fallback_response = client
-        .post(&session_url)
-        .json(&legacy_payload)
-        .send()
-        .await
-        .context("failed to create WebDriver session with legacy payload")?;
-    let fallback_status = fallback_response.status();
-    let fallback_body: Value = fallback_response
-        .json()
-        .await
-        .context("failed to decode legacy WebDriver session response body")?;
-    tracing::debug!(
-        target: "pneuma_engines",
-        mode = "legacy",
-        %fallback_status,
-        body = ?fallback_body,
-        "session creation response body"
-    );
-
-    if !fallback_status.is_success() {
-        let wd_error = format_wd_error(&fallback_body);
+    if session_already_started {
         bail!(
-            "Servo WebDriver session creation failed with status {fallback_status}: {wd_error}. body={fallback_body}"
+            "Servo WebDriver reports an active session is already running, but this endpoint does not expose a reusable session id. \
+Restart the Servo process behind SERVO_WEBDRIVER_URL and retry."
         );
     }
 
-    extract_session_id(&fallback_body)
+    bail!(
+        "Servo WebDriver session creation failed after all attempts. \
+Last status: {last_status}, error: {last_error}, body: {last_body}"
+    )
+}
+
+fn is_session_already_started(body: &Value) -> bool {
+    let message = body
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            body.get("value")
+                .and_then(|value| value.get("message"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or_default();
+    message.to_ascii_lowercase().contains("session is already started")
+}
+
+async fn find_existing_session_id(client: &reqwest::Client, base_url: &str) -> Result<Option<String>> {
+    let sessions_url = format!("{base_url}/sessions");
+    let response = match client.get(&sessions_url).send().await {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::debug!(
+                target: "pneuma_engines",
+                error = %error,
+                "failed to query /sessions while attempting session reuse"
+            );
+            return Ok(None);
+        }
+    };
+    let status = response.status();
+    let raw = response.text().await.unwrap_or_default();
+    tracing::debug!(
+        target: "pneuma_engines",
+        %status,
+        body = %raw,
+        "sessions listing response body"
+    );
+    if !status.is_success() {
+        return Ok(None);
+    }
+
+    let body: Value = match serde_json::from_str(&raw) {
+        Ok(body) => body,
+        Err(error) => {
+            tracing::debug!(
+                target: "pneuma_engines",
+                error = %error,
+                "sessions listing was not JSON; cannot reuse existing session"
+            );
+            return Ok(None);
+        }
+    };
+
+    let sessions = body
+        .get("value")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for session in sessions {
+        if let Some(session_id) = session
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .or_else(|| session.get("id").and_then(Value::as_str))
+            .or_else(|| {
+                session
+                    .get("value")
+                    .and_then(|value| value.get("sessionId"))
+                    .and_then(Value::as_str)
+            })
+        {
+            return Ok(Some(session_id.to_string()));
+        }
+    }
+    Ok(None)
 }
 
 fn extract_session_id(body: &Value) -> Result<String> {
