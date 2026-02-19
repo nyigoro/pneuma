@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pneuma-core",
+    "crates/pneuma-broker",
+    "crates/pneuma-engines",
+    "crates/pneuma-network",
+    "crates/pneuma-stealth",
+    "crates/pneuma-js",
+    "crates/pneuma-plugin",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pneuma-browser/pneuma"
+rust-version = "1.82"
+
+[workspace.dependencies]
+tokio = { version = "1.40", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+cxx = "1.0"
+libloading = "0.8"
+rquickjs = { version = "0.6", features = ["full-async"] }
+reqwest = { version = "0.12", features = [
+    "rustls-tls",
+    "cookies",
+    "gzip",
+    "brotli",
+    "http2",
+], default-features = false }
+rustls = { version = "0.23", features = ["ring"] }
+tokio-rustls = "0.26"
+ring = "0.17"
+clap = { version = "4.5", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+toml = "0.8"
+rand = "0.8"
+anyhow = "1.0"
+thiserror = "1.0"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

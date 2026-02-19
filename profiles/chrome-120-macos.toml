@@ -1,0 +1,4 @@
+profile = "chrome-120-macos"
+user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+platform = "MacIntel"
+accept_language = "en-US,en;q=0.9"

@@ -1,0 +1,43 @@
+# patches/registry.toml
+# This file is compiled into the binary via include_str!()
+# Community contributions: add an entry + JS file, open a PR
+
+[[patches]]
+id = "abort-controller-polyfill"
+description = "AbortController and AbortSignal for Servo < 2025.11"
+file = "shims/abort_controller.js"
+version = "1.0.0"
+
+  [patches.trigger]
+  type = "js_error_pattern"
+  pattern = "ReferenceError.*AbortController"
+
+[[patches]]
+id = "object-fromentries"
+description = "Object.fromEntries for older Servo JS engine builds"
+file = "poly/es2019_object.js"
+version = "1.0.0"
+
+  [patches.trigger]
+  type = "js_error_pattern"
+  pattern = "TypeError.*fromEntries"
+
+[[patches]]
+id = "aspect-ratio-css"
+description = "JS layout correction for CSS aspect-ratio property"
+file = "poly/aspect_ratio.js"
+version = "1.0.0"
+
+  [patches.trigger]
+  type = "css_parse_failure"
+  feature = "aspect-ratio"
+
+[[patches]]
+id = "web-speech-stub"
+description = "Stub Web Speech API when unavailable in target engine"
+file = "shims/web_speech_stub.js"
+version = "1.0.0"
+
+  [patches.trigger]
+  type = "js_error_pattern"
+  pattern = "ReferenceError.*SpeechRecognition"
