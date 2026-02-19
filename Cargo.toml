@@ -30,6 +30,7 @@ reqwest = { version = "0.12", features = [
     "gzip",
     "brotli",
     "http2",
+    "json",
 ], default-features = false }
 rustls = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"

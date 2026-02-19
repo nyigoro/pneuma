@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,7 +18,12 @@ impl std::fmt::Display for EngineKind {
     }
 }
 
+#[async_trait]
 pub trait HeadlessEngine: Send + Sync {
     fn kind(&self) -> EngineKind;
     fn name(&self) -> &'static str;
+    async fn navigate(&self, url: &str, opts_json: &str) -> anyhow::Result<String>;
+    async fn evaluate(&self, script: &str) -> anyhow::Result<String>;
+    async fn screenshot(&self) -> anyhow::Result<Vec<u8>>;
+    async fn close(&self) -> anyhow::Result<()>;
 }
