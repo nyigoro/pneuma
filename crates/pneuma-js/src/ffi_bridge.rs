@@ -1,8 +1,17 @@
+#[cfg(feature = "quickjs")]
+use pneuma_broker::handle::BrokerHandle;
+#[cfg(feature = "quickjs")]
 use rquickjs::{Ctx, Function, Object, Result, Undefined};
+
+#[cfg(feature = "quickjs")]
+fn to_js_err(error: anyhow::Error) -> rquickjs::Error {
+    rquickjs::Error::new_from_js_message("broker", "js", error.to_string())
+}
 
 /// Registers all `__pneuma_private_ffi` host functions into the QuickJS context.
 /// Must be called BEFORE the ghost_shim.js is evaluated.
-pub fn register(ctx: Ctx<'_>) -> Result<()> {
+#[cfg(feature = "quickjs")]
+pub fn register(ctx: Ctx<'_>, broker: BrokerHandle) -> Result<()> {
     let ffi = Object::new(ctx.clone())?;
 
     ffi.set(
@@ -23,40 +32,30 @@ pub fn register(ctx: Ctx<'_>) -> Result<()> {
         })?,
     )?;
 
-    ffi.set(
-        "createPage",
-        Function::new(ctx.clone(), || {
-            tracing::info!(target: "ghost_shim", "ffi.createPage() called");
-            1_u32
-        })?,
-    )?;
+    ffi.set("createPage", {
+        let broker = broker.clone();
+        Function::new(ctx.clone(), move || -> Result<u32> { broker.create_page().map_err(to_js_err) })?
+    })?;
 
-    ffi.set(
-        "navigate",
-        Function::new(ctx.clone(), |page_id: u32, url: String, opts_json: String| {
-            tracing::info!(
-                target: "ghost_shim",
-                page_id,
-                url = %url,
-                opts_len = opts_json.len(),
-                "ffi.navigate() called - engine not yet wired"
-            );
-            r#"{"ok":true,"engine":"stub","migrated":false}"#.to_string()
-        })?,
-    )?;
+    ffi.set("navigate", {
+        let broker = broker.clone();
+        Function::new(
+            ctx.clone(),
+            move |page_id: u32, url: String, opts_json: String| -> Result<String> {
+                broker.navigate(page_id, url, opts_json).map_err(to_js_err)
+            },
+        )?
+    })?;
 
-    ffi.set(
-        "evaluate",
-        Function::new(ctx.clone(), |page_id: u32, script: String| {
-            tracing::info!(
-                target: "ghost_shim",
-                page_id,
-                script_len = script.len(),
-                "ffi.evaluate() called - engine not yet wired"
-            );
-            "null".to_string()
-        })?,
-    )?;
+    ffi.set("evaluate", {
+        let broker = broker.clone();
+        Function::new(
+            ctx.clone(),
+            move |page_id: u32, script: String| -> Result<String> {
+                broker.evaluate(page_id, script).map_err(to_js_err)
+            },
+        )?
+    })?;
 
     ffi.set(
         "screenshot",

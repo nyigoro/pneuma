@@ -892,6 +892,7 @@ dependencies = [
  "pneuma-engines",
  "serde",
  "thiserror",
+ "tokio",
  "tracing",
 ]
 
@@ -922,6 +923,7 @@ name = "pneuma-js"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "pneuma-broker",
  "rquickjs",
  "serde",
  "serde_json",

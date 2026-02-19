@@ -11,4 +11,5 @@ anyhow.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tokio.workspace = true
 pneuma-engines = { path = "../pneuma-engines" }
