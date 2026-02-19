@@ -1,7 +1,7 @@
 use anyhow::Result;
 use pneuma_engines::EngineKind;
 
-use crate::confidence::{ConfidenceScorer, ConfidenceSignals};
+use crate::confidence::{ConfidenceScorer, ConfidenceSignals, EngineDecision};
 
 #[derive(Debug)]
 pub struct Broker {
@@ -20,7 +20,8 @@ impl Broker {
     }
 
     pub fn route(&self, signals: &ConfidenceSignals) -> EngineKind {
-        if self.stealth && self.scorer.score(signals) < 0.5 {
+        let report = self.scorer.score(signals);
+        if self.stealth && matches!(report.decision, EngineDecision::EscalateToLadybird(_)) {
             EngineKind::Ladybird
         } else {
             self.engine

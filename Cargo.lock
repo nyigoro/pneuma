@@ -917,6 +917,7 @@ dependencies = [
  "anyhow",
  "pneuma-engines",
  "serde",
+ "serde_json",
  "thiserror",
  "tokio",
  "tracing",
