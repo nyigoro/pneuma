@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
@@ -13,6 +14,9 @@ use crate::{EngineKind, HeadlessEngine};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
 const READY_POLL_INTERVAL: Duration = Duration::from_millis(200);
+const TITLE_READY_TIMEOUT: Duration = Duration::from_secs(2);
+
+static FIRST_EVALUATE_BODY_LOGGED: AtomicBool = AtomicBool::new(false);
 
 pub struct ServoEngine {
     client: reqwest::Client,
@@ -118,37 +122,64 @@ impl HeadlessEngine for ServoEngine {
             .await
             .context("failed to decode Servo navigate response body")?;
         if !nav_status.is_success() {
-            bail!("Servo navigate failed with status {nav_status}: {nav_body}");
+            let wd_error = format_wd_error(&nav_body);
+            bail!("Servo navigate failed with status {nav_status}: {wd_error}. body={nav_body}");
         }
 
-        let title_response = self
-            .client
-            .get(self.endpoint("title"))
-            .send()
-            .await
-            .context("failed to send Servo WebDriver title request")?;
-        let title_status = title_response.status();
-        let title_body: Value = title_response
-            .json()
-            .await
-            .context("failed to decode Servo title response body")?;
-        if !title_status.is_success() {
-            bail!("Servo title query failed with status {title_status}: {title_body}");
+        let title_endpoint = self.endpoint("title");
+        let deadline = Instant::now() + TITLE_READY_TIMEOUT;
+
+        loop {
+            let title_response = self
+                .client
+                .get(&title_endpoint)
+                .send()
+                .await
+                .context("failed to send Servo WebDriver title request")?;
+            let title_status = title_response.status();
+            let title_body: Value = title_response
+                .json()
+                .await
+                .context("failed to decode Servo title response body")?;
+
+            if title_status.is_success() {
+                match extract_wd_value(&title_body) {
+                    Ok(title_value) => {
+                        let title = title_value
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| title_value.to_string());
+                        if !title.is_empty() || Instant::now() >= deadline {
+                            return Ok(json!({
+                                "ok": true,
+                                "engine": "servo",
+                                "migrated": false,
+                                "title": title,
+                            })
+                            .to_string());
+                        }
+                    }
+                    Err(error) => {
+                        tracing::debug!(
+                            target: "pneuma_engines",
+                            error = %error,
+                            body = ?title_body,
+                            "failed to extract title from WebDriver response"
+                        );
+                    }
+                }
+            }
+
+            if Instant::now() >= deadline {
+                let status = title_status.to_string();
+                let wd_error = format_wd_error(&title_body);
+                bail!(
+                    "Servo title query did not become ready within {}ms after navigate (last_status={status}, error={wd_error}, body={title_body})",
+                    TITLE_READY_TIMEOUT.as_millis()
+                );
+            }
+            sleep(READY_POLL_INTERVAL).await;
         }
-
-        let title = title_body
-            .get("value")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .unwrap_or_else(|| title_body.get("value").cloned().unwrap_or(Value::Null).to_string());
-
-        Ok(json!({
-            "ok": true,
-            "engine": "servo",
-            "migrated": false,
-            "title": title,
-        })
-        .to_string())
     }
 
     async fn evaluate(&self, script: &str) -> Result<String> {
@@ -173,10 +204,25 @@ impl HeadlessEngine for ServoEngine {
             .json()
             .await
             .context("failed to decode Servo evaluate response body")?;
-        if !status.is_success() {
-            bail!("Servo evaluate failed with status {status}: {body}");
+
+        if FIRST_EVALUATE_BODY_LOGGED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            tracing::debug!(
+                target: "pneuma_engines",
+                %status,
+                body = ?body,
+                "first Servo evaluate raw response body"
+            );
         }
-        let value = body.get("value").cloned().unwrap_or(Value::Null);
+
+        if !status.is_success() {
+            let wd_error = format_wd_error(&body);
+            bail!("Servo evaluate failed with status {status}: {wd_error}. body={body}");
+        }
+
+        let value = extract_wd_value(&body)?;
         serde_json::to_string(&value).context("failed to encode Servo evaluate result")
     }
 
@@ -191,11 +237,16 @@ impl HeadlessEngine for ServoEngine {
                     || response.status() == reqwest::StatusCode::NOT_FOUND => {}
             Ok(response) => {
                 let status = response.status();
-                let body = response.text().await.unwrap_or_else(|_| "<unreadable>".into());
+                let body: Value = response
+                    .json()
+                    .await
+                    .unwrap_or_else(|_| json!({ "message": "<unreadable response body>" }));
+                let wd_error = format_wd_error(&body);
                 tracing::warn!(
                     target: "pneuma_engines",
                     %status,
-                    body = %body,
+                    error = %wd_error,
+                    body = ?body,
                     "Servo session delete returned non-success"
                 );
             }
@@ -302,41 +353,107 @@ async fn create_session(client: &reqwest::Client, base_url: &str) -> Result<Stri
         .send()
         .await
         .context("failed to create WebDriver session with W3C payload")?;
-
-    let response = if !first_response.status().is_success() {
-        tracing::debug!(
-            target: "pneuma_engines",
-            status = %first_response.status(),
-            "W3C session creation failed, retrying with legacy payload"
-        );
-        let legacy_payload = json!({
-            "desiredCapabilities": {}
-        });
-        client
-            .post(&session_url)
-            .json(&legacy_payload)
-            .send()
-            .await
-            .context("failed to create WebDriver session with legacy payload")?
-    } else {
-        first_response
-    };
-
-    let status = response.status();
-    let body: Value = response
+    let first_status = first_response.status();
+    let first_body: Value = first_response
         .json()
         .await
-        .context("failed to decode WebDriver session response body")?;
+        .context("failed to decode W3C WebDriver session response body")?;
+    tracing::debug!(
+        target: "pneuma_engines",
+        mode = "w3c",
+        %first_status,
+        body = ?first_body,
+        "session creation response body"
+    );
 
-    if !status.is_success() {
-        bail!("Servo WebDriver session creation failed with status {status}: {body}");
+    if first_status.is_success() {
+        return extract_session_id(&first_body);
     }
 
+    tracing::debug!(
+        target: "pneuma_engines",
+        status = %first_status,
+        error = %format_wd_error(&first_body),
+        "W3C session creation failed, retrying with legacy payload"
+    );
+
+    let legacy_payload = json!({
+        "desiredCapabilities": {}
+    });
+    let fallback_response = client
+        .post(&session_url)
+        .json(&legacy_payload)
+        .send()
+        .await
+        .context("failed to create WebDriver session with legacy payload")?;
+    let fallback_status = fallback_response.status();
+    let fallback_body: Value = fallback_response
+        .json()
+        .await
+        .context("failed to decode legacy WebDriver session response body")?;
+    tracing::debug!(
+        target: "pneuma_engines",
+        mode = "legacy",
+        %fallback_status,
+        body = ?fallback_body,
+        "session creation response body"
+    );
+
+    if !fallback_status.is_success() {
+        let wd_error = format_wd_error(&fallback_body);
+        bail!(
+            "Servo WebDriver session creation failed with status {fallback_status}: {wd_error}. body={fallback_body}"
+        );
+    }
+
+    extract_session_id(&fallback_body)
+}
+
+fn extract_session_id(body: &Value) -> Result<String> {
     body.get("sessionId")
         .and_then(Value::as_str)
-        .or_else(|| body.get("value").and_then(|value| value.get("sessionId")).and_then(Value::as_str))
+        .or_else(|| {
+            body.get("value")
+                .and_then(|value| value.get("sessionId"))
+                .and_then(Value::as_str)
+        })
         .map(str::to_owned)
         .ok_or_else(|| anyhow!("Could not extract sessionId from WebDriver response: {body}"))
+}
+
+fn extract_wd_value(body: &Value) -> Result<Value> {
+    let value = body
+        .get("value")
+        .cloned()
+        .ok_or_else(|| anyhow!("WebDriver response missing `value`: {body}"))?;
+
+    match value {
+        Value::Object(mut object) => {
+            if object.len() == 1 && object.contains_key("value") {
+                Ok(object.remove("value").unwrap_or(Value::Null))
+            } else {
+                Ok(Value::Object(object))
+            }
+        }
+        other => Ok(other),
+    }
+}
+
+fn format_wd_error(body: &Value) -> String {
+    let root_error = body.get("error").and_then(Value::as_str);
+    let root_message = body.get("message").and_then(Value::as_str);
+
+    let value = body.get("value").and_then(Value::as_object);
+    let nested_error = value
+        .and_then(|map| map.get("error"))
+        .and_then(Value::as_str);
+    let nested_message = value
+        .and_then(|map| map.get("message"))
+        .and_then(Value::as_str);
+
+    let error = nested_error.or(root_error).unwrap_or("unknown WebDriver error");
+    let message = nested_message.or(root_message).unwrap_or("no error message");
+    format!("{error}: {message}")
 }
 
 async fn terminate_process(process: &mut Option<Child>) {

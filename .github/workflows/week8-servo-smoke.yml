@@ -1,0 +1,44 @@
+name: week8-servo-smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  servo-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust 1.82.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.82.0
+
+      - name: Check Servo endpoint secret
+        run: |
+          if [ -z "$SERVO_WEBDRIVER_URL" ]; then
+            echo "::error::SERVO_WEBDRIVER_URL secret is not set."
+            echo "::error::Go to Settings > Secrets > Actions and add SERVO_WEBDRIVER_URL."
+            exit 1
+          fi
+          echo "Servo endpoint: $SERVO_WEBDRIVER_URL"
+        env:
+          SERVO_WEBDRIVER_URL: ${{ secrets.SERVO_WEBDRIVER_URL }}
+
+      - name: Run Servo smoke test
+        run: |
+          cargo test -p pneuma-core --test week7_servo_smoke \
+            -- --ignored --nocapture 2>&1 | tee week8-servo-smoke.log
+        env:
+          SERVO_WEBDRIVER_URL: ${{ secrets.SERVO_WEBDRIVER_URL }}
+          RUST_LOG: "pneuma=info,pneuma_broker=info,pneuma_js=info,pneuma_engines=debug,ghost_shim=info"
+          PNEUMA_LOG: "pneuma=info,pneuma_broker=info,pneuma_js=info,pneuma_engines=debug,ghost_shim=info"
+
+      - name: Upload smoke log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: week8-servo-smoke.log
+          path: week8-servo-smoke.log
+          retention-days: 7
