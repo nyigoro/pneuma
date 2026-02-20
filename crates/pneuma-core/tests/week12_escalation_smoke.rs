@@ -44,7 +44,7 @@ async fn start_fixture_server() -> Result<(SocketAddr, tokio::task::JoinHandle<(
     Ok((addr, handle))
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires SERVO_WEBDRIVER_URL and SERVO_SECONDARY_WEBDRIVER_URL to be set"]
 async fn escalation_handoff_produces_migrated_response() -> Result<()> {
     // Skip cleanly when endpoints are not configured.
@@ -80,8 +80,9 @@ async fn escalation_handoff_produces_migrated_response() -> Result<()> {
     let runtime = pneuma_js::Runtime::new(handle)?;
 
     // Synchronous FFI script - no ghost.open, no JSON.stringify on the result object.
-    // nav1: primary Servo serves the fixture page, scores low, triggers escalation.
-    // nav2: secondary Servo proxy serves after handoff, stamped migrated:true.
+    // nav1: primary navigate triggers low-confidence escalation; successful
+    // handoff reply is stamped migrated:true by broker.
+    // nav2: subsequent navigate is served on secondary and also stamped.
     let script = format!(
         r#"
         var pageId = __pneuma_private_ffi.createPage();
@@ -114,8 +115,8 @@ async fn escalation_handoff_produces_migrated_response() -> Result<()> {
     );
     assert_eq!(
         runtime.eval_expression("__pneuma_week12_result.nav1_migrated")?,
-        "false",
-        "nav1 should not be migrated"
+        "true",
+        "nav1 should be migrated because handoff completed during first navigate"
     );
     assert_eq!(
         runtime.eval_expression("__pneuma_week12_result.nav2_ok")?,
