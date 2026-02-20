@@ -2,6 +2,9 @@ name: week8-servo-smoke
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 concurrency:
   group: servo-live-endpoints
