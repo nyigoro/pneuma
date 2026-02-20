@@ -12,6 +12,9 @@ use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+const DATA_FIXTURE_URL: &str =
+    "data:text/html;base64,PCFET0NUWVBFIGh0bWw+PGh0bWw+PGhlYWQ+PC9oZWFkPjxib2R5PjwvYm9keT48L2h0bWw+";
+
 /// Minimal HTTP/1.1 server returning a near-empty HTML page.
 /// Near-empty DOM -> low paint/DOM scores -> confidence below 0.60 -> escalation.
 async fn start_fixture_server() -> Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
@@ -44,6 +47,13 @@ async fn start_fixture_server() -> Result<(SocketAddr, tokio::task::JoinHandle<(
     Ok((addr, handle))
 }
 
+fn is_loopback_endpoint(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.contains("://127.0.0.1")
+        || lower.contains("://localhost")
+        || lower.contains("://[::1]")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires SERVO_WEBDRIVER_URL and SERVO_SECONDARY_WEBDRIVER_URL to be set"]
 async fn escalation_handoff_produces_migrated_response() -> Result<()> {
@@ -67,10 +77,19 @@ async fn escalation_handoff_produces_migrated_response() -> Result<()> {
         .try_init()
         .ok();
 
-    // Start fixture server.
-    let (addr, fixture_task) = start_fixture_server().await?;
-    let fixture_url = format!("http://{addr}/");
-    eprintln!("[week12] fixture server at {fixture_url}");
+    let primary_endpoint = std::env::var("SERVO_WEBDRIVER_URL").unwrap_or_default();
+
+    // Remote endpoints (e.g. CI via tunnel) cannot reach runner-local 127.0.0.1,
+    // so use a deterministic data: URL fixture in that case.
+    let (fixture_url, fixture_task) = if is_loopback_endpoint(&primary_endpoint) {
+        let (addr, task) = start_fixture_server().await?;
+        let url = format!("http://{addr}/");
+        eprintln!("[week12] local fixture server at {url}");
+        (url, Some(task))
+    } else {
+        eprintln!("[week12] remote endpoint detected; using data URL fixture");
+        (DATA_FIXTURE_URL.to_string(), None)
+    };
 
     // Build primary engine, broker, and JS runtime.
     let engine = Box::new(pneuma_engines::servo::ServoEngine::launch().await?);
@@ -135,6 +154,8 @@ async fn escalation_handoff_produces_migrated_response() -> Result<()> {
     );
 
     eprintln!("[week12] all assertions passed");
-    fixture_task.abort();
+    if let Some(task) = fixture_task {
+        task.abort();
+    }
     Ok(())
 }
