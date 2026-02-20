@@ -46,9 +46,6 @@ jobs:
   week12-escalation-smoke:
     name: Week 12 - Escalation Smoke (Two-Engine)
     runs-on: ubuntu-latest
-    if: >
-      secrets.SERVO_WEBDRIVER_URL != '' &&
-      secrets.SERVO_SECONDARY_WEBDRIVER_URL != ''
 
     steps:
       - uses: actions/checkout@v4
