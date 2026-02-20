@@ -915,6 +915,7 @@ name = "pneuma-broker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "pneuma-engines",
  "serde",
  "serde_json",

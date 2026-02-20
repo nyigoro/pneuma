@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::{EngineKind, HeadlessEngine};
+use crate::{EngineKind, HeadlessEngine, MigrationEnvelope};
 
 #[derive(Debug, Default)]
 pub struct LadybirdEngine;
@@ -28,6 +28,14 @@ impl HeadlessEngine for LadybirdEngine {
     }
 
     async fn close(&self) -> anyhow::Result<()> {
+        anyhow::bail!("ladybird engine is not wired yet")
+    }
+
+    async fn extract_state(&self) -> anyhow::Result<MigrationEnvelope> {
+        anyhow::bail!("ladybird engine is not wired yet")
+    }
+
+    async fn import_state(&self, _state: MigrationEnvelope) -> anyhow::Result<()> {
         anyhow::bail!("ladybird engine is not wired yet")
     }
 }

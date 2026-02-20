@@ -1,5 +1,6 @@
 pub mod broker;
 pub mod confidence;
+pub mod engine_factory;
 pub mod handle;
 pub mod migration;
 pub mod service;
