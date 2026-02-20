@@ -527,7 +527,56 @@ impl HeadlessEngine for ServoEngine {
             let wd_error = format_wd_error(&body);
             bail!("Servo set_viewport failed with status {status}: {wd_error}");
         }
+
+        // Verify dimensions were applied within tolerance.
+        // +-2px accommodates window manager rounding on Linux CI environments.
+        const TOLERANCE: u32 = 2;
+        let (actual_w, actual_h) = self
+            .get_viewport()
+            .await
+            .context("set_viewport: failed to read back viewport dimensions")?;
+        if actual_w.abs_diff(width) > TOLERANCE || actual_h.abs_diff(height) > TOLERANCE {
+            bail!(
+                "set_viewport: requested {width}x{height} but engine reports \
+                 {actual_w}x{actual_h} (tolerance +- {TOLERANCE}px)"
+            );
+        }
         Ok(())
+    }
+
+    async fn get_viewport(&self) -> Result<(u32, u32)> {
+        let response = self
+            .client
+            .get(self.endpoint("window/rect"))
+            .send()
+            .await
+            .context("failed to send Servo WebDriver get_viewport request")?;
+        let status = response.status();
+        let body: Value = response
+            .json()
+            .await
+            .context("failed to decode Servo get_viewport response body")?;
+        if !status.is_success() {
+            bail!(
+                "Servo get_viewport failed with status {status}: {}",
+                format_wd_error(&body)
+            );
+        }
+
+        // extract_wd_value peels the outer "value" wrapper, leaving
+        // { "width": N, "height": N, "x": N, "y": N }.
+        let value = extract_wd_value(&body)?;
+        let width = value
+            .get("width")
+            .and_then(Value::as_f64)
+            .map(|v| v.round() as u32)
+            .ok_or_else(|| anyhow!("get_viewport response missing width: {value}"))?;
+        let height = value
+            .get("height")
+            .and_then(Value::as_f64)
+            .map(|v| v.round() as u32)
+            .ok_or_else(|| anyhow!("get_viewport response missing height: {value}"))?;
+        Ok((width, height))
     }
 
     async fn close(&self) -> Result<()> {

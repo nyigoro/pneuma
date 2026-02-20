@@ -499,6 +499,18 @@ pub async fn run_with_factory<F>(
                 let _ = reply.send(result);
             }
 
+            BrokerRequest::GetViewport { page_id, reply } => {
+                tracing::info!(
+                    target: "pneuma_broker",
+                    page_id,
+                    active_role = %state.active_role,
+                    "GetViewport"
+                );
+                let result = state.active_engine.get_viewport().await;
+                handle_operation_health(&mut state, page_id, "get_viewport", &result).await;
+                let _ = reply.send(result);
+            }
+
             BrokerRequest::CloseBrowser { reply } => {
                 tracing::info!(target: "pneuma_broker", "CloseBrowser");
                 let result = state.active_engine.close().await;
@@ -957,6 +969,9 @@ mod tests {
         async fn set_viewport(&self, _w: u32, _h: u32) -> Result<()> {
             Ok(())
         }
+        async fn get_viewport(&self) -> Result<(u32, u32)> {
+            Ok((1280, 720))
+        }
         async fn close(&self) -> Result<()> {
             self.closed.store(true, std::sync::atomic::Ordering::Release);
             Ok(())
@@ -1048,6 +1063,9 @@ mod tests {
             }
             async fn set_viewport(&self, _w: u32, _h: u32) -> Result<()> {
                 Ok(())
+            }
+            async fn get_viewport(&self) -> Result<(u32, u32)> {
+                Ok((1280, 720))
             }
             async fn close(&self) -> Result<()> {
                 Ok(())
@@ -1167,6 +1185,9 @@ mod tests {
         }
         async fn set_viewport(&self, _w: u32, _h: u32) -> Result<()> {
             Ok(())
+        }
+        async fn get_viewport(&self) -> Result<(u32, u32)> {
+            Ok((1280, 720))
         }
         async fn close(&self) -> Result<()> {
             self.closed.store(true, std::sync::atomic::Ordering::Release);
@@ -1297,6 +1318,9 @@ mod tests {
             async fn set_viewport(&self, _w: u32, _h: u32) -> Result<()> {
                 Ok(())
             }
+            async fn get_viewport(&self) -> Result<(u32, u32)> {
+                Ok((1280, 720))
+            }
             async fn close(&self) -> Result<()> {
                 Ok(())
             }
@@ -1346,6 +1370,9 @@ mod tests {
             }
             async fn set_viewport(&self, _w: u32, _h: u32) -> Result<()> {
                 Ok(())
+            }
+            async fn get_viewport(&self) -> Result<(u32, u32)> {
+                Ok((1280, 720))
             }
             async fn close(&self) -> Result<()> {
                 Ok(())

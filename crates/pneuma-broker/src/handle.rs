@@ -27,6 +27,10 @@ pub enum BrokerRequest {
         height: u32,
         reply: oneshot::Sender<Result<()>>,
     },
+    GetViewport {
+        page_id: u32,
+        reply: oneshot::Sender<Result<(u32, u32)>>,
+    },
     CloseBrowser {
         reply: oneshot::Sender<Result<()>>,
     },
@@ -90,6 +94,10 @@ impl BrokerHandle {
             height,
             reply,
         })
+    }
+
+    pub fn get_viewport(&self, page_id: u32) -> Result<(u32, u32)> {
+        self.round_trip(|reply| BrokerRequest::GetViewport { page_id, reply })
     }
 
     pub fn close_browser(&self) -> Result<()> {

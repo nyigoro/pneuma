@@ -31,6 +31,10 @@ impl HeadlessEngine for LadybirdEngine {
         anyhow::bail!("ladybird engine is not wired yet")
     }
 
+    async fn get_viewport(&self) -> anyhow::Result<(u32, u32)> {
+        anyhow::bail!("ladybird engine is not wired yet")
+    }
+
     async fn close(&self) -> anyhow::Result<()> {
         anyhow::bail!("ladybird engine is not wired yet")
     }

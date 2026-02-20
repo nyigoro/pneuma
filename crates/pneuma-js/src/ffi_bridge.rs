@@ -81,6 +81,14 @@ pub fn register(ctx: Ctx<'_>, broker: BrokerHandle) -> Result<()> {
         )?
     })?;
 
+    ffi.set("getViewport", {
+        let broker = broker.clone();
+        Function::new(ctx.clone(), move |page_id: u32| -> Result<Vec<u32>> {
+            let (w, h) = broker.get_viewport(page_id).map_err(to_js_err)?;
+            Ok(vec![w, h])
+        })?
+    })?;
+
     ffi.set(
         "closeBrowser",
         Function::new(ctx.clone(), || {

@@ -36,9 +36,15 @@ async fn screenshot_pipeline_returns_valid_png_base64() -> Result<()> {
         var pageId = __pneuma_private_ffi.createPage();
         var nav = JSON.parse(__pneuma_private_ffi.navigate(pageId, "{url}", "{{}}"));
         __pneuma_private_ffi.setViewport(pageId, 1280, 720);
+        var vp = __pneuma_private_ffi.getViewport(pageId);
         var b64 = __pneuma_private_ffi.screenshot(pageId);
         globalThis.__week15 = {{
             nav_ok:           nav.ok === true,
+            viewport_w:       vp[0],
+            viewport_h:       vp[1],
+            // +-2px tolerance: Linux window managers may adjust dimensions to
+            // tile boundaries or compositor constraints.
+            viewport_ok:      Math.abs(vp[0] - 1280) <= 2 && Math.abs(vp[1] - 720) <= 2,
             screenshot_type:  typeof b64,
             screenshot_len:   b64.length,
             is_nontrivial:    b64.length > 100,
@@ -55,6 +61,11 @@ async fn screenshot_pipeline_returns_valid_png_base64() -> Result<()> {
         runtime.eval_expression("__week15.nav_ok")?,
         "true",
         "navigate should succeed"
+    );
+    assert_eq!(
+        runtime.eval_expression("__week15.viewport_ok")?,
+        "true",
+        "viewport should be within +-2px of 1280x720 before screenshot"
     );
     assert_eq!(
         runtime.eval_expression("__week15.screenshot_type")?,

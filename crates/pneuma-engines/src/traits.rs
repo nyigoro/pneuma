@@ -28,6 +28,7 @@ pub trait HeadlessEngine: Send + Sync {
     async fn evaluate(&self, script: &str) -> anyhow::Result<String>;
     async fn screenshot(&self) -> anyhow::Result<Vec<u8>>;
     async fn set_viewport(&self, width: u32, height: u32) -> anyhow::Result<()>;
+    async fn get_viewport(&self) -> anyhow::Result<(u32, u32)>;
     async fn close(&self) -> anyhow::Result<()>;
 
     /// Capture cookies and current-origin localStorage into a portable envelope.
