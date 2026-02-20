@@ -13,6 +13,8 @@ use pneuma_engines::HeadlessEngine;
 const ESCALATION_TIMEOUT: Duration = Duration::from_secs(10);
 const ACTIVE_FAILURE_BUDGET: u32 = 3;
 const ESCALATION_BACKOFF_AFTER_ROLLBACK: Duration = Duration::from_secs(30);
+const RECOVERY_CONFIDENCE_THRESHOLD: f32 = 0.72;
+const RECOVERY_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EngineRole {
@@ -90,6 +92,18 @@ impl BrokerState {
         self.escalation_backoff_until = Some(Instant::now() + ESCALATION_BACKOFF_AFTER_ROLLBACK);
         Some(failed)
     }
+
+    /// Promote standby primary back to active after score-based recovery.
+    /// Returns the former secondary for best-effort close by caller.
+    /// Returns `None` if no standby is present.
+    fn apply_score_recovery(&mut self) -> Option<Box<dyn HeadlessEngine>> {
+        let primary = self.standby_primary.take()?;
+        let old_secondary = std::mem::replace(&mut self.active_engine, primary);
+        self.active_role = EngineRole::Primary;
+        self.consecutive_failures = 0;
+        // No backoff: this is a healthy transition, not a failure rollback.
+        Some(old_secondary)
+    }
 }
 
 struct HandoffResult {
@@ -141,6 +155,112 @@ async fn handle_operation_health<T>(
                     tracing::warn!(
                         target: "pneuma_broker",
                         "rollback requested but standby primary was not available"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Attempt score-based recovery from secondary back to primary.
+///
+/// Called after successful navigations while on `SecondaryProxy`.
+/// Recovery affects subsequent operations only; caller sends its current
+/// navigate result unchanged.
+async fn attempt_score_recovery(
+    state: &mut BrokerState,
+    scorer: &ConfidenceScorer,
+    page_id: u32,
+    url: &str,
+    opts_json: &str,
+    active_overall: f32,
+) {
+    if state.active_role != EngineRole::SecondaryProxy {
+        return;
+    }
+    if state.standby_primary.is_none() {
+        tracing::debug!(
+            target: "pneuma_broker",
+            page_id,
+            active_overall,
+            reason = "no_standby",
+            "recovery probe skipped"
+        );
+        return;
+    }
+    if active_overall < RECOVERY_CONFIDENCE_THRESHOLD {
+        tracing::debug!(
+            target: "pneuma_broker",
+            page_id,
+            active_overall,
+            threshold = RECOVERY_CONFIDENCE_THRESHOLD,
+            reason = "below_threshold",
+            "recovery probe skipped"
+        );
+        return;
+    }
+
+    let Some(standby) = state.standby_primary.take() else {
+        return;
+    };
+    let probe_start = Instant::now();
+    let probe_outcome =
+        tokio::time::timeout(RECOVERY_PROBE_TIMEOUT, standby.navigate(url, opts_json)).await;
+    let elapsed_ms = probe_start.elapsed().as_millis() as u64;
+
+    match probe_outcome {
+        Err(_timeout) => {
+            tracing::warn!(
+                target: "pneuma_broker",
+                page_id,
+                duration_ms = elapsed_ms,
+                reason = "timeout",
+                "recovery probe failed; staying on secondary"
+            );
+            state.standby_primary = Some(standby);
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(
+                target: "pneuma_broker",
+                page_id,
+                duration_ms = elapsed_ms,
+                error = %error,
+                reason = "navigate_error",
+                "recovery probe failed; staying on secondary"
+            );
+            state.standby_primary = Some(standby);
+        }
+        Ok(Ok(probe_meta)) => {
+            let probe_signals = signals_from_navigate_meta(&probe_meta, page_id);
+            let probe_report = scorer.score(&probe_signals);
+            if probe_report.overall < RECOVERY_CONFIDENCE_THRESHOLD {
+                tracing::info!(
+                    target: "pneuma_broker",
+                    page_id,
+                    probe_overall = probe_report.overall,
+                    threshold = RECOVERY_CONFIDENCE_THRESHOLD,
+                    duration_ms = elapsed_ms,
+                    "recovery probe scored below threshold; staying on secondary"
+                );
+                state.standby_primary = Some(standby);
+                return;
+            }
+
+            state.standby_primary = Some(standby);
+            if let Some(old_secondary) = state.apply_score_recovery() {
+                tracing::info!(
+                    target: "pneuma_broker",
+                    page_id,
+                    active_overall,
+                    probe_overall = probe_report.overall,
+                    duration_ms = elapsed_ms,
+                    "score-based recovery succeeded; switched back to primary"
+                );
+                if let Err(error) = old_secondary.close().await {
+                    tracing::warn!(
+                        target: "pneuma_broker",
+                        error = %error,
+                        "failed to close secondary after score-based recovery"
                     );
                 }
             }
@@ -221,6 +341,24 @@ pub async fn run_with_factory<F>(
                     failure_reason = ?report.failure_reason,
                     "confidence report"
                 );
+
+                // While on secondary, probe standby primary for score-based recovery.
+                // Current navigate result is returned unchanged either way.
+                if state.active_role == EngineRole::SecondaryProxy {
+                    if result.is_ok() {
+                        attempt_score_recovery(
+                            &mut state,
+                            &scorer,
+                            page_id,
+                            &url,
+                            &opts_json,
+                            report.overall,
+                        )
+                        .await;
+                    }
+                    let _ = reply.send(result);
+                    continue;
+                }
 
                 let escalation_decision = match &report.decision {
                     EngineDecision::EscalateToLadybird(reason) => Some(reason.clone()),
@@ -597,7 +735,11 @@ fn parse_usize(object: &serde_json::Map<String, Value>, key: &str) -> Option<usi
 
 #[cfg(test)]
 mod tests {
-    use super::{signals_from_navigate_meta, stamp_migrated, BrokerState, EngineRole, ESCALATION_TIMEOUT};
+    use super::{
+        attempt_score_recovery, signals_from_navigate_meta, stamp_migrated, BrokerState,
+        EngineRole, ESCALATION_TIMEOUT, RECOVERY_CONFIDENCE_THRESHOLD,
+    };
+    use crate::confidence::ConfidenceScorer;
     use crate::engine_factory::EscalationEngineFactory;
     use anyhow::Result;
     use async_trait::async_trait;
@@ -723,6 +865,216 @@ mod tests {
         state.record_failure();
         state.record_success();
         assert!(!state.record_failure());
+    }
+
+    /// Engine with deterministic metadata output so scorer paths are controlled.
+    struct MetaEngine {
+        name: &'static str,
+        meta: String,
+        closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl MetaEngine {
+        fn healthy(name: &'static str) -> Self {
+            let meta = serde_json::json!({
+                "ok": true,
+                "engine": name,
+                "title": "Healthy Page",
+                "first_paint_ms": 300,
+                "paint_element_count": 80,
+                "dom_element_count": 120,
+                "dom_depth_max": 8,
+                "body_text_length": 2000,
+                "js_execution_time_ms": 100,
+                "js_errors": 0,
+                "failed_resource_count": 0,
+            })
+            .to_string();
+            Self {
+                name,
+                meta,
+                closed: Default::default(),
+            }
+        }
+
+        fn unhealthy(name: &'static str) -> Self {
+            let meta = serde_json::json!({
+                "ok": false,
+                "engine": name,
+                "title": "",
+                "first_paint_ms": 9000,
+                "paint_element_count": 0,
+                "dom_element_count": 1,
+                "body_text_length": 0,
+                "js_errors": 0,
+                "failed_resource_count": 0,
+            })
+            .to_string();
+            Self {
+                name,
+                meta,
+                closed: Default::default(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl HeadlessEngine for MetaEngine {
+        fn kind(&self) -> EngineKind {
+            EngineKind::Servo
+        }
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        async fn navigate(&self, _url: &str, _opts: &str) -> Result<String> {
+            Ok(self.meta.clone())
+        }
+        async fn evaluate(&self, _script: &str) -> Result<String> {
+            Ok("null".into())
+        }
+        async fn screenshot(&self) -> Result<Vec<u8>> {
+            Ok(vec![])
+        }
+        async fn close(&self) -> Result<()> {
+            self.closed.store(true, std::sync::atomic::Ordering::Release);
+            Ok(())
+        }
+        async fn extract_state(&self) -> Result<MigrationEnvelope> {
+            Ok(MigrationEnvelope {
+                source_engine: EngineKind::Servo,
+                captured_at_ms: 0,
+                current_url: None,
+                cookies: vec![],
+                local_storage: vec![],
+            })
+        }
+        async fn import_state(&self, _state: MigrationEnvelope) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn score_recovery_switches_to_primary_when_probe_is_healthy() {
+        let scorer = ConfidenceScorer::new();
+        let active = MetaEngine::healthy("secondary");
+        let active_signals = signals_from_navigate_meta(&active.meta, 1);
+        let report = scorer.score(&active_signals);
+        assert!(
+            report.overall >= RECOVERY_CONFIDENCE_THRESHOLD,
+            "test setup must produce a healthy score"
+        );
+
+        let mut state = BrokerState::new(Box::new(active));
+        state.active_role = EngineRole::SecondaryProxy;
+        state.standby_primary = Some(Box::new(MetaEngine::healthy("standby_primary")));
+
+        attempt_score_recovery(
+            &mut state,
+            &scorer,
+            1,
+            "https://example.com/",
+            "{}",
+            report.overall,
+        )
+        .await;
+
+        assert_eq!(state.active_role, EngineRole::Primary);
+        assert!(state.standby_primary.is_none());
+    }
+
+    #[tokio::test]
+    async fn score_recovery_not_attempted_below_threshold() {
+        let scorer = ConfidenceScorer::new();
+        let mut state = BrokerState::new(Box::new(MetaEngine::healthy("secondary")));
+        state.active_role = EngineRole::SecondaryProxy;
+        state.standby_primary = Some(Box::new(MetaEngine::healthy("standby")));
+
+        let below_threshold = RECOVERY_CONFIDENCE_THRESHOLD - 0.01;
+        attempt_score_recovery(
+            &mut state,
+            &scorer,
+            1,
+            "https://example.com/",
+            "{}",
+            below_threshold,
+        )
+        .await;
+
+        assert_eq!(state.active_role, EngineRole::SecondaryProxy);
+        assert!(state.standby_primary.is_some());
+    }
+
+    #[tokio::test]
+    async fn score_recovery_probe_failure_stays_on_secondary() {
+        struct FailingStandby;
+        #[async_trait]
+        impl HeadlessEngine for FailingStandby {
+            fn kind(&self) -> EngineKind {
+                EngineKind::Servo
+            }
+            fn name(&self) -> &'static str {
+                "failing_standby"
+            }
+            async fn navigate(&self, _url: &str, _opts: &str) -> Result<String> {
+                Err(anyhow::anyhow!("standby probe failed"))
+            }
+            async fn evaluate(&self, _script: &str) -> Result<String> {
+                Ok("null".into())
+            }
+            async fn screenshot(&self) -> Result<Vec<u8>> {
+                Ok(vec![])
+            }
+            async fn close(&self) -> Result<()> {
+                Ok(())
+            }
+            async fn extract_state(&self) -> Result<MigrationEnvelope> {
+                Err(anyhow::anyhow!("not implemented"))
+            }
+            async fn import_state(&self, _state: MigrationEnvelope) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let scorer = ConfidenceScorer::new();
+        let mut state = BrokerState::new(Box::new(MetaEngine::healthy("secondary")));
+        state.active_role = EngineRole::SecondaryProxy;
+        state.standby_primary = Some(Box::new(FailingStandby));
+
+        let healthy = RECOVERY_CONFIDENCE_THRESHOLD + 0.10;
+        attempt_score_recovery(
+            &mut state,
+            &scorer,
+            1,
+            "https://example.com/",
+            "{}",
+            healthy,
+        )
+        .await;
+
+        assert_eq!(state.active_role, EngineRole::SecondaryProxy);
+        assert!(state.standby_primary.is_some());
+    }
+
+    #[tokio::test]
+    async fn score_recovery_probe_low_score_stays_on_secondary() {
+        let scorer = ConfidenceScorer::new();
+        let mut state = BrokerState::new(Box::new(MetaEngine::healthy("secondary")));
+        state.active_role = EngineRole::SecondaryProxy;
+        state.standby_primary = Some(Box::new(MetaEngine::unhealthy("weak_standby")));
+
+        let healthy = RECOVERY_CONFIDENCE_THRESHOLD + 0.10;
+        attempt_score_recovery(
+            &mut state,
+            &scorer,
+            1,
+            "https://example.com/",
+            "{}",
+            healthy,
+        )
+        .await;
+
+        assert_eq!(state.active_role, EngineRole::SecondaryProxy);
+        assert!(state.standby_primary.is_some());
     }
 
     struct FakeEngine {
