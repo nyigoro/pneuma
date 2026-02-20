@@ -5,7 +5,11 @@ use pneuma_broker::handle::BrokerHandle;
 use crate::ffi_bridge;
 
 #[cfg(feature = "quickjs")]
+use rquickjs::promise::MaybePromise;
+#[cfg(feature = "quickjs")]
 use rquickjs::Runtime as QjsRuntime;
+#[cfg(feature = "quickjs")]
+use rquickjs::Value as JsValue;
 #[cfg(feature = "quickjs")]
 use std::sync::mpsc::{sync_channel, SyncSender};
 #[cfg(feature = "quickjs")]
@@ -14,7 +18,7 @@ use std::thread::JoinHandle;
 #[cfg(feature = "quickjs")]
 const GHOST_SHIM: &str = include_str!("shim/ghost_shim.js");
 #[cfg(feature = "quickjs")]
-const ASYNC_EXPR_SENTINEL: &str = "__PNEUMA_ASYNC_EXPR__";
+const MAX_DRAIN_ITERATIONS: u32 = 1000;
 
 #[cfg(feature = "quickjs")]
 enum RuntimeCommand {
@@ -80,38 +84,76 @@ impl Runtime {
 
                     tracing::info!(target: "pneuma_js", "QuickJS thread ready");
 
+                    // Drain pending microtasks with a hard cap to avoid hangs on malformed scripts.
+                    fn drain_jobs(ctx: rquickjs::Ctx<'_>) -> Result<()> {
+                        // NOTE: Use ctx.execute_pending_job() here, NOT runtime.execute_pending_job().
+                        // We are already inside context.with(...) which holds a RefCell borrow on the
+                        // runtime. Calling through the runtime handle would panic with BorrowMutError.
+                        // The context-scoped method avoids the double-borrow while providing identical
+                        // job-pump semantics.
+                        for _ in 0..MAX_DRAIN_ITERATIONS {
+                            if ctx.execute_pending_job() {
+                                continue;
+                            }
+                            return Ok(());
+                        }
+                        anyhow::bail!(
+                            "async expression did not resolve after {MAX_DRAIN_ITERATIONS} job drain iterations - possible infinite loop in script"
+                        )
+                    }
+
+                    fn serialize_value<'js>(
+                        ctx: rquickjs::Ctx<'js>,
+                        value: JsValue<'js>,
+                    ) -> Result<String> {
+                        if value.is_undefined() {
+                            return Ok("null".into());
+                        }
+                        match ctx.json_stringify(value).map_err(anyhow::Error::from)? {
+                            Some(serialized) => Ok(serialized.to_string()?),
+                            None => Ok("null".into()),
+                        }
+                    }
+
+                    fn resolve_promise<'js>(
+                        ctx: rquickjs::Ctx<'js>,
+                        maybe: MaybePromise<'js>,
+                    ) -> Result<String> {
+                        if let Some(value) = maybe.result::<JsValue>() {
+                            let value = value.map_err(anyhow::Error::from)?;
+                            return serialize_value(ctx, value);
+                        }
+
+                        drain_jobs(ctx.clone())?;
+
+                        match maybe.result::<JsValue>() {
+                            Some(value) => {
+                                let value = value.map_err(anyhow::Error::from)?;
+                                serialize_value(ctx, value)
+                            }
+                            None => anyhow::bail!(
+                                "Promise did not resolve: possible infinite loop or unresolvable microtask chain (cap: 1000 iterations)"
+                            ),
+                        }
+                    }
+
                     while let Ok(command) = cmd_rx.recv() {
                         match command {
                             RuntimeCommand::Execute { source, reply } => {
-                                let result = context
-                                    .with(|ctx| ctx.eval::<(), _>(source.as_str()))
-                                    .map_err(anyhow::Error::from);
+                                let result = context.with(|ctx| -> Result<()> {
+                                    ctx.eval::<(), _>(source.as_str())
+                                        .map_err(anyhow::Error::from)?;
+                                    drain_jobs(ctx.clone())?;
+                                    Ok(())
+                                });
                                 let _ = reply.send(result);
                             }
                             RuntimeCommand::Eval { expr, reply } => {
-                                let wrapped = format!(
-                                    "(function() {{
-                                        let __pneuma_value = ({expr});
-                                        let __pneuma_is_async =
-                                            __pneuma_value !== null &&
-                                            (typeof __pneuma_value === 'object' || typeof __pneuma_value === 'function') &&
-                                            typeof __pneuma_value.then === 'function';
-                                        if (__pneuma_is_async) {{
-                                            return '{ASYNC_EXPR_SENTINEL}';
-                                        }}
-                                        let __pneuma_json = JSON.stringify(__pneuma_value);
-                                        return __pneuma_json === undefined ? String(__pneuma_value) : __pneuma_json;
-                                    }})()"
-                                );
-                                let result = context
-                                    .with(|ctx| ctx.eval::<String, _>(wrapped.as_str()))
-                                    .map_err(anyhow::Error::from)
-                                    .and_then(|rendered| {
-                                        if rendered == ASYNC_EXPR_SENTINEL {
-                                            anyhow::bail!("async expressions are not supported yet");
-                                        }
-                                        Ok(rendered)
-                                    });
+                                let result = context.with(|ctx| -> Result<String> {
+                                    let maybe: MaybePromise =
+                                        ctx.eval(expr.as_str()).map_err(anyhow::Error::from)?;
+                                    resolve_promise(ctx, maybe)
+                                });
                                 let _ = reply.send(result);
                             }
                             RuntimeCommand::Shutdown { reply } => {
