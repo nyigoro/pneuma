@@ -42,3 +42,50 @@ jobs:
           name: week8-servo-smoke.log
           path: week8-servo-smoke.log
           retention-days: 7
+
+  week12-escalation-smoke:
+    name: Week 12 - Escalation Smoke (Two-Engine)
+    runs-on: ubuntu-latest
+    if: >
+      secrets.SERVO_WEBDRIVER_URL != '' &&
+      secrets.SERVO_SECONDARY_WEBDRIVER_URL != ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.82.0
+
+      - name: Verify required secrets are present
+        run: |
+          if [ -z "$SERVO_WEBDRIVER_URL" ]; then
+            echo "::error::SERVO_WEBDRIVER_URL is not set"
+            exit 1
+          fi
+          if [ -z "$SERVO_SECONDARY_WEBDRIVER_URL" ]; then
+            echo "::error::SERVO_SECONDARY_WEBDRIVER_URL is not set"
+            exit 1
+          fi
+        env:
+          SERVO_WEBDRIVER_URL: ${{ secrets.SERVO_WEBDRIVER_URL }}
+          SERVO_SECONDARY_WEBDRIVER_URL: ${{ secrets.SERVO_SECONDARY_WEBDRIVER_URL }}
+
+      - name: Run Week 12 escalation smoke test
+        run: |
+          cargo test -p pneuma-core --test week12_escalation_smoke \
+            -- --ignored --nocapture 2>&1 | tee week12-escalation-smoke.log
+        env:
+          SERVO_WEBDRIVER_URL: ${{ secrets.SERVO_WEBDRIVER_URL }}
+          SERVO_SECONDARY_WEBDRIVER_URL: ${{ secrets.SERVO_SECONDARY_WEBDRIVER_URL }}
+          PNEUMA_LOG: pneuma=debug,pneuma_broker=debug,pneuma_engines=debug
+          RUST_LOG: pneuma=debug
+
+      - name: Upload smoke log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: week12-escalation-smoke-log
+          path: week12-escalation-smoke.log
+          retention-days: 14
