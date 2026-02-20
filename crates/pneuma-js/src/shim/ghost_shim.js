@@ -61,6 +61,20 @@
       return ffi.screenshot(this._id);
     }
 
+    async setViewport(options = {}) {
+      const width = options.width;
+      const height = options.height;
+      if (
+        !Number.isFinite(width) || width <= 0 ||
+        !Number.isFinite(height) || height <= 0
+      ) {
+        throw new Error(
+          `[Pneuma] setViewport requires positive finite width and height, got: ${width}x${height}`
+        );
+      }
+      ffi.setViewport(this._id, width | 0, height | 0);
+    }
+
     async title() {
       return this.evaluate(() => document.title);
     }

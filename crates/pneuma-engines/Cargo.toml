@@ -16,3 +16,4 @@ async-trait = "0.1"
 which = "6.0"
 home = "=0.5.9"
 tracing.workspace = true
+base64.workspace = true

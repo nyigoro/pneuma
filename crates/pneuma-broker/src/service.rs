@@ -480,6 +480,25 @@ pub async fn run_with_factory<F>(
                 let _ = reply.send(result);
             }
 
+            BrokerRequest::SetViewport {
+                page_id,
+                width,
+                height,
+                reply,
+            } => {
+                tracing::info!(
+                    target: "pneuma_broker",
+                    page_id,
+                    width,
+                    height,
+                    active_role = %state.active_role,
+                    "SetViewport"
+                );
+                let result = state.active_engine.set_viewport(width, height).await;
+                handle_operation_health(&mut state, page_id, "set_viewport", &result).await;
+                let _ = reply.send(result);
+            }
+
             BrokerRequest::CloseBrowser { reply } => {
                 tracing::info!(target: "pneuma_broker", "CloseBrowser");
                 let result = state.active_engine.close().await;
@@ -935,6 +954,9 @@ mod tests {
         async fn screenshot(&self) -> Result<Vec<u8>> {
             Ok(vec![])
         }
+        async fn set_viewport(&self, _w: u32, _h: u32) -> Result<()> {
+            Ok(())
+        }
         async fn close(&self) -> Result<()> {
             self.closed.store(true, std::sync::atomic::Ordering::Release);
             Ok(())
@@ -1023,6 +1045,9 @@ mod tests {
             }
             async fn screenshot(&self) -> Result<Vec<u8>> {
                 Ok(vec![])
+            }
+            async fn set_viewport(&self, _w: u32, _h: u32) -> Result<()> {
+                Ok(())
             }
             async fn close(&self) -> Result<()> {
                 Ok(())
@@ -1139,6 +1164,9 @@ mod tests {
         }
         async fn screenshot(&self) -> Result<Vec<u8>> {
             Ok(vec![])
+        }
+        async fn set_viewport(&self, _w: u32, _h: u32) -> Result<()> {
+            Ok(())
         }
         async fn close(&self) -> Result<()> {
             self.closed.store(true, std::sync::atomic::Ordering::Release);
@@ -1266,6 +1294,9 @@ mod tests {
             async fn screenshot(&self) -> Result<Vec<u8>> {
                 Ok(vec![])
             }
+            async fn set_viewport(&self, _w: u32, _h: u32) -> Result<()> {
+                Ok(())
+            }
             async fn close(&self) -> Result<()> {
                 Ok(())
             }
@@ -1312,6 +1343,9 @@ mod tests {
             }
             async fn screenshot(&self) -> Result<Vec<u8>> {
                 Ok(vec![])
+            }
+            async fn set_viewport(&self, _w: u32, _h: u32) -> Result<()> {
+                Ok(())
             }
             async fn close(&self) -> Result<()> {
                 Ok(())

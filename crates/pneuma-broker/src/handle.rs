@@ -21,6 +21,12 @@ pub enum BrokerRequest {
         page_id: u32,
         reply: oneshot::Sender<Result<Vec<u8>>>,
     },
+    SetViewport {
+        page_id: u32,
+        width: u32,
+        height: u32,
+        reply: oneshot::Sender<Result<()>>,
+    },
     CloseBrowser {
         reply: oneshot::Sender<Result<()>>,
     },
@@ -75,6 +81,15 @@ impl BrokerHandle {
 
     pub fn screenshot(&self, page_id: u32) -> Result<Vec<u8>> {
         self.round_trip(|reply| BrokerRequest::Screenshot { page_id, reply })
+    }
+
+    pub fn set_viewport(&self, page_id: u32, width: u32, height: u32) -> Result<()> {
+        self.round_trip(|reply| BrokerRequest::SetViewport {
+            page_id,
+            width,
+            height,
+            reply,
+        })
     }
 
     pub fn close_browser(&self) -> Result<()> {

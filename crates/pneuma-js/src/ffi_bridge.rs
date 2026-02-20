@@ -1,4 +1,6 @@
 #[cfg(feature = "quickjs")]
+use base64::Engine as _;
+#[cfg(feature = "quickjs")]
 use pneuma_broker::handle::BrokerHandle;
 #[cfg(feature = "quickjs")]
 use rquickjs::{Ctx, Function, Object, Result, Undefined};
@@ -57,17 +59,27 @@ pub fn register(ctx: Ctx<'_>, broker: BrokerHandle) -> Result<()> {
         )?
     })?;
 
-    ffi.set(
-        "screenshot",
-        Function::new(ctx.clone(), |page_id: u32| {
-            tracing::info!(
-                target: "ghost_shim",
-                page_id,
-                "ffi.screenshot() called - engine not yet wired"
-            );
-            Undefined
-        })?,
-    )?;
+    ffi.set("screenshot", {
+        let broker = broker.clone();
+        Function::new(ctx.clone(), move |page_id: u32| -> Result<String> {
+            let bytes = broker.screenshot(page_id).map_err(to_js_err)?;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            Ok(b64)
+        })?
+    })?;
+
+    ffi.set("setViewport", {
+        let broker = broker.clone();
+        Function::new(
+            ctx.clone(),
+            move |page_id: u32, width: u32, height: u32| -> Result<Undefined> {
+                broker
+                    .set_viewport(page_id, width, height)
+                    .map_err(to_js_err)?;
+                Ok(Undefined)
+            },
+        )?
+    })?;
 
     ffi.set(
         "closeBrowser",

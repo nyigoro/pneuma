@@ -944,6 +944,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64",
  "home",
  "reqwest",
  "serde",
@@ -958,6 +959,7 @@ name = "pneuma-js"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "pneuma-broker",
  "rquickjs",
  "serde",

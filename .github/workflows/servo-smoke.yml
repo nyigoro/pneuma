@@ -118,3 +118,64 @@ jobs:
           name: week12-escalation-smoke-log
           path: week12-escalation-smoke.log
           retention-days: 14
+
+  week15-screenshot-smoke:
+    name: Week 15 - Screenshot Smoke
+    runs-on: ubuntu-latest
+    needs: servo-smoke
+    if: secrets.SERVO_WEBDRIVER_URL != ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.82.0
+
+      - name: Verify SERVO_WEBDRIVER_URL is set
+        run: |
+          if [ -z "$SERVO_WEBDRIVER_URL" ]; then
+            echo "::error::SERVO_WEBDRIVER_URL is not set"
+            exit 1
+          fi
+        env:
+          SERVO_WEBDRIVER_URL: ${{ secrets.SERVO_WEBDRIVER_URL }}
+
+      - name: Wait for Servo WebDriver to be ready
+        run: |
+          ready=false
+          for i in $(seq 1 20); do
+            body="$(curl -fsS "${SERVO_WEBDRIVER_URL}/status" || true)"
+            echo "status[${i}]: ${body}"
+            if echo "$body" | grep -q '"ready":true'; then
+              ready=true
+              break
+            fi
+            sleep 3
+          done
+
+          if [ "$ready" != "true" ]; then
+            echo "::error::Servo endpoint did not report ready:true within timeout."
+            echo "::error::URL=${SERVO_WEBDRIVER_URL}"
+            exit 1
+          fi
+        env:
+          SERVO_WEBDRIVER_URL: ${{ secrets.SERVO_WEBDRIVER_URL }}
+
+      - name: Run Week 15 screenshot smoke test
+        run: |
+          cargo test -p pneuma-core --test week15_screenshot_smoke \
+            -- --ignored --nocapture 2>&1 | tee week15-screenshot-smoke.log
+        env:
+          SERVO_WEBDRIVER_URL: ${{ secrets.SERVO_WEBDRIVER_URL }}
+          PNEUMA_LOG: pneuma=debug,pneuma_engines=debug
+          RUST_LOG: pneuma=debug
+
+      - name: Upload smoke log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: week15-screenshot-smoke-log
+          path: week15-screenshot-smoke.log
+          retention-days: 14

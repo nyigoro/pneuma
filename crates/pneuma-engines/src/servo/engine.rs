@@ -485,7 +485,49 @@ impl HeadlessEngine for ServoEngine {
     }
 
     async fn screenshot(&self) -> Result<Vec<u8>> {
-        Ok(Vec::new())
+        use base64::Engine as _;
+
+        let response = self
+            .client
+            .get(self.endpoint("screenshot"))
+            .send()
+            .await
+            .context("failed to send Servo WebDriver screenshot request")?;
+        let status = response.status();
+        let body: Value = response
+            .json()
+            .await
+            .context("failed to decode Servo screenshot response body")?;
+        if !status.is_success() {
+            let wd_error = format_wd_error(&body);
+            bail!("Servo screenshot failed with status {status}: {wd_error}");
+        }
+
+        let value = extract_wd_value(&body)?;
+        let b64 = value
+            .as_str()
+            .ok_or_else(|| anyhow!("screenshot WebDriver value was not a string: {value}"))?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .context("failed to decode screenshot base64 from WebDriver")?;
+        Ok(bytes)
+    }
+
+    async fn set_viewport(&self, width: u32, height: u32) -> Result<()> {
+        let response = self
+            .client
+            .post(self.endpoint("window/rect"))
+            .json(&json!({ "width": width, "height": height }))
+            .send()
+            .await
+            .context("failed to send Servo WebDriver set_viewport request")?;
+        let status = response.status();
+        if !status.is_success() {
+            let body: Value = response.json().await.unwrap_or_else(|_| json!({}));
+            let wd_error = format_wd_error(&body);
+            bail!("Servo set_viewport failed with status {status}: {wd_error}");
+        }
+        Ok(())
     }
 
     async fn close(&self) -> Result<()> {
