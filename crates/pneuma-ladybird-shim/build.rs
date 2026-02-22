@@ -3,6 +3,7 @@ use std::process::Command;
 
 const REQUIRED_CMAKE: &str = "3.30";
 const VCPKG_PINNED_COMMIT: &str = "2fa7118fb2ce0c27ab73e08ab1991f4cb67af880";
+const HELPER_SERVICES: &[&str] = &["RequestServer", "ImageDecoder", "WebContent"];
 
 fn main() {
     // Keep default workspace builds fast.
@@ -25,6 +26,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/sanity.cpp");
+    println!("cargo:rerun-if-changed=src/bridge.cpp");
     println!("cargo:rerun-if-env-changed=LADYBIRD_BUILD_DIR");
 
     check_cmake_version(REQUIRED_CMAKE);
@@ -42,6 +44,19 @@ fn main() {
     }
 
     cmake_build_target(&build_dir, "lib/liblagom-core.so.0");
+    eprintln!("[pneuma-ladybird-shim] building liblagom-webview...");
+    run_cmd(
+        Command::new("cmake")
+            .arg("--build")
+            .arg(&build_dir)
+            .args(["--target", "lib/liblagom-webview.so.0"])
+            .current_dir(&ladybird_src),
+        "cmake build liblagom-webview",
+    );
+    for target in HELPER_SERVICES {
+        cmake_build_target(&build_dir, target);
+    }
+    link_helper_services_into_target_libexec(&build_dir, HELPER_SERVICES);
 
     let vcpkg_include = build_dir.join("vcpkg_installed").join("x64-linux-dynamic").join("include");
     let lagom_include = build_dir.join("Lagom");
@@ -54,12 +69,47 @@ fn main() {
         .include(ladybird_src.join("Libraries"))
         .include(&vcpkg_include)
         .include(&lagom_include)
+        .include(lagom_include.join("Libraries"))
+        .include(lagom_include.join("Services"))
         .file(manifest_dir.join("src").join("sanity.cpp"))
+        .file(manifest_dir.join("src").join("bridge.cpp"))
         .compile("pneuma_ladybird_sanity");
 
     let lib_dir = build_dir.join("lib");
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
-    println!("cargo:rustc-link-lib=dylib=lagom-core");
+    // Lagom shared libraries - full set required to satisfy all symbol references.
+    for lib in &[
+        "lagom-ak",
+        "lagom-compress",
+        "lagom-core",
+        "lagom-coreminimal",
+        "lagom-crypto",
+        "lagom-database",
+        "lagom-devtools",
+        "lagom-filesystem",
+        "lagom-gc",
+        "lagom-gfx",
+        "lagom-http",
+        "lagom-idl",
+        "lagom-imagedecoderclient",
+        "lagom-ipc",
+        "lagom-js",
+        "lagom-media",
+        "lagom-regex",
+        "lagom-requests",
+        "lagom-syntax",
+        "lagom-textcodec",
+        "lagom-threading",
+        "lagom-tls",
+        "lagom-unicode",
+        "lagom-url",
+        "lagom-wasm",
+        "lagom-web",
+        "lagom-webview",
+        "lagom-xml",
+    ] {
+        println!("cargo:rustc-link-lib=dylib={lib}");
+    }
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
 }
 
@@ -164,6 +214,54 @@ fn run_cmd(cmd: &mut Command, label: &str) {
     if !status.success() {
         panic!("`{label}` failed with status {status}");
     }
+}
+
+fn link_helper_services_into_target_libexec(build_dir: &Path, services: &[&str]) {
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("missing OUT_DIR"));
+    let target_dir = out_dir
+        .ancestors()
+        .nth(3)
+        .expect("failed to resolve Cargo target dir from OUT_DIR");
+    let libexec_dir = target_dir.join("libexec");
+    std::fs::create_dir_all(&libexec_dir).expect("failed to create cargo target libexec directory");
+
+    for service in services {
+        let source = build_dir.join("libexec").join(service);
+        if !source.exists() {
+            panic!("helper service binary not found: {}", source.display());
+        }
+
+        let link = libexec_dir.join(service);
+        if std::fs::symlink_metadata(&link).is_ok() {
+            std::fs::remove_file(&link).unwrap_or_else(|error| {
+                panic!("failed to remove existing helper link {}: {error}", link.display())
+            });
+        }
+
+        create_helper_service_link_or_copy(&source, &link);
+    }
+}
+
+#[cfg(unix)]
+fn create_helper_service_link_or_copy(source: &Path, link: &Path) {
+    std::os::unix::fs::symlink(source, link).unwrap_or_else(|error| {
+        panic!(
+            "failed to create helper symlink {} -> {}: {error}",
+            link.display(),
+            source.display()
+        )
+    });
+}
+
+#[cfg(not(unix))]
+fn create_helper_service_link_or_copy(source: &Path, link: &Path) {
+    std::fs::copy(source, link).unwrap_or_else(|error| {
+        panic!(
+            "failed to copy helper service {} -> {}: {error}",
+            source.display(),
+            link.display()
+        )
+    });
 }
 
 fn version_at_least(found: &str, minimum: &str) -> bool {

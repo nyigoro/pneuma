@@ -5,9 +5,11 @@ edition = "2021"
 build = "build.rs"
 
 [features]
-ladybird = []
+ladybird = ["dep:anyhow", "dep:tokio"]
 
 [build-dependencies]
 cc = "1.0"
 
 [dependencies]
+anyhow = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["sync", "time"], optional = true }

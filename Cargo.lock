@@ -971,7 +971,9 @@ dependencies = [
 name = "pneuma-ladybird-shim"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "cc",
+ "tokio",
 ]
 
 [[package]]
