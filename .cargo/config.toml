@@ -1,6 +1,12 @@
 [build]
 # Default to musl for portability
 # Override with: cargo build --target x86_64-unknown-linux-gnu
+#
+# Keep `-W unexpected-cfgs` usable across dependency builds by accepting
+# `target_os = "cygwin"` used by mio 1.1.1.
+rustflags = [
+    "--check-cfg=cfg(target_os, values(\"cygwin\"))",
+]
 
 [target.x86_64-unknown-linux-musl]
 linker = "clang"
