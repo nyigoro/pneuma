@@ -8,3 +8,28 @@
 # Local Cloudflare tunnel logs (do not commit)
 /cloudflared-*.log
 vendor/ladybird/Build/
+
+# Local CMake/Ninja build output accidentally generated at repo root
+/.ninja_deps
+/.ninja_log
+/.qt/
+/CMakeCache.txt
+/CMakeFiles/
+/CPackConfig.cmake
+/CPackSourceConfig.cmake
+/CTestTestfile.cmake
+/DartConfiguration.tcl
+/Lagom/
+/Services/
+/UI/
+/Testing/
+/bin/
+/lib/
+/libexec/
+/build-vcpkg-variables.cmake
+/build.ninja
+/cmake_install.cmake
+/compile_commands.json
+/vcpkg-manifest-install.log
+/vcpkg_installed/
+/COMMIT
