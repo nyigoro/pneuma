@@ -51,6 +51,7 @@ fn main() {
         .compiler("clang++-20")
         .flag("-std=c++23")
         .include(&ladybird_src)
+        .include(ladybird_src.join("Libraries"))
         .include(&vcpkg_include)
         .include(&lagom_include)
         .file(manifest_dir.join("src").join("sanity.cpp"))
