@@ -1,0 +1,3 @@
+[submodule "vendor/ladybird"]
+	path = vendor/ladybird
+	url = https://github.com/LadybirdBrowser/ladybird.git

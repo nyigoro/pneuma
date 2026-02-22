@@ -4,3 +4,7 @@
 /servo-*.exe
 /servo-*.tar.gz
 /servo-*.sha256
+
+# Local Cloudflare tunnel logs (do not commit)
+/cloudflared-*.log
+vendor/ladybird/Build/

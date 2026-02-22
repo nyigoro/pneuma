@@ -8,6 +8,7 @@ members = [
     "crates/pneuma-stealth",
     "crates/pneuma-js",
     "crates/pneuma-plugin",
+    "crates/pneuma-ladybird-shim",
 ]
 
 [workspace.package]

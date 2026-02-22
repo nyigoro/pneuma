@@ -968,6 +968,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "pneuma-ladybird-shim"
+version = "0.1.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "pneuma-network"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,13 @@
+[package]
+name = "pneuma-ladybird-shim"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[features]
+ladybird = []
+
+[build-dependencies]
+cc = "1.0"
+
+[dependencies]

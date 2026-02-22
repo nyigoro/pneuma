@@ -1,0 +1,63 @@
+name: Ladybird Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ladybird-shim-build:
+    name: Ladybird Shim - ABI Sanity Check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            cmake ninja-build clang-20 \
+            nasm autoconf autoconf-archive automake libtool \
+            qt6-base-dev qt6-tools-dev qt6-tools-dev-tools \
+            libxkbcommon-dev libpulse-dev \
+            pkg-config curl zip unzip tar
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.82.0
+
+      - name: Cache vcpkg installed tree
+        uses: actions/cache@v4
+        with:
+          path: vendor/ladybird/Build/debug-clang20/vcpkg_installed
+          key: ladybird-vcpkg-${{ hashFiles('vendor/ladybird/vcpkg.json') }}
+          restore-keys: |
+            ladybird-vcpkg-
+
+      - name: Cache liblagom build output
+        uses: actions/cache@v4
+        with:
+          path: vendor/ladybird/Build/debug-clang20/lib
+          key: ladybird-lib-${{ hashFiles('vendor/ladybird/vcpkg.json') }}-${{ github.sha }}
+          restore-keys: |
+            ladybird-lib-${{ hashFiles('vendor/ladybird/vcpkg.json') }}-
+
+      - name: Build and run ABI sanity check
+        run: |
+          cargo test -p pneuma-ladybird-shim --features ladybird \
+            2>&1 | tee ladybird-build.log
+        env:
+          CC: clang-20
+          CXX: clang++-20
+          LADYBIRD_BUILD_DIR: ${{ github.workspace }}/vendor/ladybird/Build/debug-clang20
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ladybird-build-log
+          path: ladybird-build.log
+          retention-days: 14
