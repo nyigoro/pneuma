@@ -22,6 +22,8 @@ use tokio::net::TcpListener;
 use std::net::{TcpStream, ToSocketAddrs};
 #[cfg(feature = "ladybird")]
 use std::time::Duration;
+#[cfg(feature = "ladybird")]
+use std::fs;
 
 #[cfg(feature = "ladybird")]
 fn is_loopback_endpoint(url: &str) -> bool {
@@ -29,6 +31,34 @@ fn is_loopback_endpoint(url: &str) -> bool {
     lower.contains("://127.0.0.1")
         || lower.contains("://localhost")
         || lower.contains("://[::1]")
+}
+
+#[cfg(feature = "ladybird")]
+fn is_wsl_host_endpoint(url: &str) -> bool {
+    let host = match url
+        .trim()
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .split('/')
+        .next()
+        .and_then(|hp| hp.rsplit_once(':').map(|(h, _)| h).or(Some(hp)))
+    {
+        Some(h) if !h.is_empty() => h,
+        _ => return false,
+    };
+
+    let osrelease = fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+    if !osrelease.to_ascii_lowercase().contains("microsoft") {
+        return false;
+    }
+
+    let resolv = fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
+    let nameserver = resolv
+        .lines()
+        .find_map(|line| line.strip_prefix("nameserver "))
+        .map(str::trim)
+        .unwrap_or("");
+    !nameserver.is_empty() && host == nameserver
 }
 
 #[cfg(feature = "ladybird")]
@@ -119,8 +149,10 @@ async fn low_confidence_servo_result_escalates_to_ladybird() -> Result<()> {
         eprintln!("[escalation-ladybird] skipping: SERVO_WEBDRIVER_URL not set");
         return Ok(());
     }
-    if !is_loopback_endpoint(&primary_endpoint) {
-        eprintln!("[escalation-ladybird] skipping: SERVO_WEBDRIVER_URL must be loopback for local fixture");
+    if !is_loopback_endpoint(&primary_endpoint) && !is_wsl_host_endpoint(&primary_endpoint) {
+        eprintln!(
+            "[escalation-ladybird] skipping: SERVO_WEBDRIVER_URL must be loopback (or WSL host IP) for local fixture"
+        );
         return Ok(());
     }
     if !endpoint_is_reachable(&primary_endpoint) {
