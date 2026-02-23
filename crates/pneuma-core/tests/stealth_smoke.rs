@@ -49,5 +49,30 @@ async fn stealth_patches_navigator_webdriver() -> Result<()> {
     let platform = runtime.eval_expression("__stealth_result.platform")?;
     assert_eq!(platform, "\"Win32\"", "navigator.platform should be Win32");
 
+    runtime.execute_script(
+        r#"
+        (async () => {
+            var page = await ghost.open(
+                "data:text/html,<title>Stealth2</title>",
+                { stealth_level: 2 }
+            );
+            globalThis.__stealth2 = {
+                vendor: await page.evaluate(() => navigator.vendor),
+                deviceMemory: await page.evaluate(() => navigator.deviceMemory),
+                screenWidth: await page.evaluate(() => screen.width),
+            };
+        })();
+    "#,
+    )?;
+
+    let vendor = runtime.eval_expression("__stealth2.vendor")?;
+    assert_eq!(vendor, "\"Google Inc.\"", "navigator.vendor should be Google Inc.");
+
+    let mem = runtime.eval_expression("__stealth2.deviceMemory")?;
+    assert_eq!(mem, "8", "navigator.deviceMemory should be 8");
+
+    let sw = runtime.eval_expression("__stealth2.screenWidth")?;
+    assert_eq!(sw, "1920", "screen.width should be 1920");
+
     Ok(())
 }

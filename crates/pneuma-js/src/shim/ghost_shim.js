@@ -44,7 +44,7 @@
       const stealthLevel = Number(opts.stealth_level ?? 0);
       if (stealthLevel >= 1 && typeof __pneuma_stealth_patch === "function") {
         try {
-          await this.evaluate(__pneuma_stealth_patch);
+          await this.evaluate(__pneuma_stealth_patch, stealthLevel);
         } catch (e) {
           console.warn("[pneuma] stealth patch failed:", e);
         }
