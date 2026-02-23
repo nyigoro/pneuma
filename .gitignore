@@ -33,3 +33,4 @@ vendor/ladybird/Build/
 /vcpkg-manifest-install.log
 /vcpkg_installed/
 /COMMIT
+/tmp/
