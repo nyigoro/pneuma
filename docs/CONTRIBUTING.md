@@ -92,3 +92,21 @@ and a Ladybird build. On Windows with WSL:
    cargo test -p pneuma-core --test escalation_to_ladybird_smoke \
      --features ladybird -- --ignored --nocapture
    ```
+
+## Running Ladybird Transport Proxy Smoke
+
+This smoke test validates Ladybird proxy plumbing through the broker transport
+profile path. It uses an in-test local recording proxy and checks that Ladybird
+traffic reaches that proxy endpoint.
+
+Prerequisites:
+- `LADYBIRD_BUILD_DIR` points to a usable Ladybird build.
+- Build host has the Ladybird toolchain (`cmake`, `clang-20`, `ninja`, etc.).
+
+Run:
+
+```bash
+LADYBIRD_BUILD_DIR=/path/to/ladybird/Build/debug-clang20 \
+cargo test -p pneuma-core --test transport_proxy_ladybird_smoke \
+  --features "ladybird transport-stealth" -- --ignored --nocapture
+```
