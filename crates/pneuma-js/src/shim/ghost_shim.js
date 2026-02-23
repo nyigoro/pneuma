@@ -37,9 +37,18 @@
     }
 
     async goto(url, options = {}) {
-      const raw = ffi.navigate(this._id, url, JSON.stringify(options));
+      const opts = options ?? {};
+      const raw = ffi.navigate(this._id, url, JSON.stringify(opts));
       const meta = JSON.parse(raw);
       if (meta.error) throw new Error(`Navigation failed: ${meta.error}`);
+      const stealthLevel = Number(opts.stealth_level ?? 0);
+      if (stealthLevel >= 1 && typeof __pneuma_stealth_patch === "function") {
+        try {
+          await this.evaluate(__pneuma_stealth_patch);
+        } catch (e) {
+          console.warn("[pneuma] stealth patch failed:", e);
+        }
+      }
       return meta;
     }
 

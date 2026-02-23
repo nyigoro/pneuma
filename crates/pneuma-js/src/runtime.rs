@@ -18,6 +18,8 @@ use std::thread::JoinHandle;
 #[cfg(feature = "quickjs")]
 const GHOST_SHIM: &str = include_str!("shim/ghost_shim.js");
 #[cfg(feature = "quickjs")]
+const STEALTH_SHIM: &str = include_str!("shim/stealth.js");
+#[cfg(feature = "quickjs")]
 const MAX_DRAIN_ITERATIONS: u32 = 1000;
 
 #[cfg(feature = "quickjs")]
@@ -70,6 +72,7 @@ impl Runtime {
                     let init_result = context
                         .with(|ctx| -> rquickjs::Result<()> {
                             ffi_bridge::register(ctx.clone(), broker)?;
+                            ctx.eval::<(), _>(STEALTH_SHIM)?;
                             ctx.eval::<(), _>(GHOST_SHIM)?;
                             Ok(())
                         })
