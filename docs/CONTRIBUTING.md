@@ -29,24 +29,24 @@ No Rust required for Track 3. If you can write a polyfill
 and identify the error pattern that triggers it,
 you can contribute.
 
-## Week 8 Live Validation (Servo WebDriver)
-To run the Week 8 smoke validation workflow:
+## Servo Smoke Validation (CI)
+To run the Servo smoke validation workflow:
 
 1. Add `SERVO_WEBDRIVER_URL` at:
    `https://github.com/nyigoro/pneuma/settings/secrets/actions`
 2. Open:
    `https://github.com/nyigoro/pneuma/actions`
-3. Manually run the `week8-servo-smoke` workflow (`workflow_dispatch`).
+3. Manually run the `servo-smoke` workflow (`workflow_dispatch`).
 
 The workflow runs:
 
 ```bash
-cargo test -p pneuma-core --test week7_servo_smoke -- --ignored --nocapture
+cargo test -p pneuma-core --test servo_smoke -- --ignored --nocapture
 ```
 
 Expected success signal: output containing `Example Domain`.
 
-Logs are always uploaded as artifact `week8-servo-smoke.log` (retained 7 days), even on failure.
+Logs are always uploaded as artifact `servo-smoke.log` (retained 7 days), even on failure.
 Download it from the workflow run summary and inspect:
 
 - session creation response body (`pneuma_engines` debug logs)
