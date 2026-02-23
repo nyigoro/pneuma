@@ -51,3 +51,32 @@ Download it from the workflow run summary and inspect:
 
 - session creation response body (`pneuma_engines` debug logs)
 - first evaluate response body (`pneuma_engines` debug logs)
+
+## Running the Escalation Smoke Test (WSL + Windows Servo)
+
+The `escalation_to_ladybird_smoke` test requires both a live Servo instance
+and a Ladybird build. On Windows with WSL:
+
+1. Start Servo on Windows:
+   ```powershell
+   servo.exe --webdriver=4444
+   ```
+
+2. Allow WSL to reach port 4444 (run once as Administrator):
+   ```powershell
+   New-NetFirewallRule `
+     -DisplayName "Servo WebDriver WSL" `
+     -Direction Inbound -Protocol TCP `
+     -LocalPort 4444 -RemoteAddress 172.16.0.0/12 `
+     -Action Allow -Profile Any -EdgeTraversalPolicy Allow
+   ```
+
+3. Run the test from WSL:
+   ```bash
+   WSL_HOST=$(grep nameserver /etc/resolv.conf | awk '{print $2}')
+   CC=clang-20 CXX=clang++-20 \
+   LADYBIRD_BUILD_DIR=/root/ladybird16b-dryrun/ladybird/Build/debug-clang20 \
+   SERVO_WEBDRIVER_URL=http://$WSL_HOST:4444 \
+   cargo test -p pneuma-core --test escalation_to_ladybird_smoke \
+     --features ladybird -- --ignored --nocapture
+   ```
