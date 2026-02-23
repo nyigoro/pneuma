@@ -1,9 +1,9 @@
-//! Week 15 screenshot smoke test.
+//! Screenshot smoke test.
 //!
 //! Requires one live Servo WebDriver endpoint: SERVO_WEBDRIVER_URL
 //!
 //! Run with:
-//!   cargo test -p pneuma-core --test week15_screenshot_smoke -- --ignored --nocapture
+//!   cargo test -p pneuma-core --test screenshot_smoke -- --ignored --nocapture
 
 use anyhow::Result;
 
@@ -11,7 +11,7 @@ use anyhow::Result;
 #[ignore = "requires SERVO_WEBDRIVER_URL to be set"]
 async fn screenshot_pipeline_returns_valid_png_base64() -> Result<()> {
     if std::env::var("SERVO_WEBDRIVER_URL").is_err() {
-        eprintln!("[week15] skipping: SERVO_WEBDRIVER_URL not set");
+        eprintln!("[screenshot-smoke] skipping: SERVO_WEBDRIVER_URL not set");
         return Ok(());
     }
 
@@ -29,7 +29,7 @@ async fn screenshot_pipeline_returns_valid_png_base64() -> Result<()> {
     let runtime = pneuma_js::Runtime::new(handle)?;
 
     // Data URL fixture - no external network required.
-    let fixture_url = "data:text/html,<html><head></head><body><h1>Week15</h1></body></html>";
+    let fixture_url = "data:text/html,<html><head></head><body><h1>ScreenshotSmoke</h1></body></html>";
 
     let script = format!(
         r#"
@@ -38,7 +38,7 @@ async fn screenshot_pipeline_returns_valid_png_base64() -> Result<()> {
         __pneuma_private_ffi.setViewport(pageId, 1280, 720);
         var vp = __pneuma_private_ffi.getViewport(pageId);
         var b64 = __pneuma_private_ffi.screenshot(pageId);
-        globalThis.__week15 = {{
+        globalThis.__screenshot_smoke = {{
             nav_ok:           nav.ok === true,
             viewport_w:       vp[0],
             viewport_h:       vp[1],
@@ -58,40 +58,40 @@ async fn screenshot_pipeline_returns_valid_png_base64() -> Result<()> {
     runtime.execute_script(&script)?;
 
     assert_eq!(
-        runtime.eval_expression("__week15.nav_ok")?,
+        runtime.eval_expression("__screenshot_smoke.nav_ok")?,
         "true",
         "navigate should succeed"
     );
     assert_eq!(
-        runtime.eval_expression("__week15.viewport_ok")?,
+        runtime.eval_expression("__screenshot_smoke.viewport_ok")?,
         "true",
         "viewport should be within +-2px of 1280x720 before screenshot"
     );
     assert_eq!(
-        runtime.eval_expression("__week15.screenshot_type")?,
+        runtime.eval_expression("__screenshot_smoke.screenshot_type")?,
         "\"string\"",
         "screenshot should be a string"
     );
     assert_eq!(
-        runtime.eval_expression("__week15.is_nontrivial")?,
+        runtime.eval_expression("__screenshot_smoke.is_nontrivial")?,
         "true",
         "screenshot should have non-trivial length"
     );
     assert_eq!(
-        runtime.eval_expression("__week15.has_png_header")?,
+        runtime.eval_expression("__screenshot_smoke.has_png_header")?,
         "true",
         "screenshot should start with PNG base64 magic header"
     );
     assert_eq!(
-        runtime.eval_expression("__week15.no_data_prefix")?,
+        runtime.eval_expression("__screenshot_smoke.no_data_prefix")?,
         "true",
         "screenshot should be plain base64, not a data URL"
     );
 
     eprintln!(
-        "[week15] screenshot length: {}",
-        runtime.eval_expression("__week15.screenshot_len")?
+        "[screenshot-smoke] screenshot length: {}",
+        runtime.eval_expression("__screenshot_smoke.screenshot_len")?
     );
-    eprintln!("[week15] all assertions passed");
+    eprintln!("[screenshot-smoke] all assertions passed");
     Ok(())
 }

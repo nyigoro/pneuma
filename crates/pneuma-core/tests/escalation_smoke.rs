@@ -1,11 +1,11 @@
-//! Week 12 escalation smoke test.
+//! Escalation smoke test.
 //!
 //! Requires two live Servo WebDriver endpoints:
 //!   SERVO_WEBDRIVER_URL           -- primary
 //!   SERVO_SECONDARY_WEBDRIVER_URL -- secondary
 //!
 //! Run manually with:
-//!   cargo test -p pneuma-core --test week12_escalation_smoke -- --ignored --nocapture
+//!   cargo test -p pneuma-core --test escalation_smoke -- --ignored --nocapture
 
 use anyhow::Result;
 use std::net::SocketAddr;
@@ -62,7 +62,7 @@ async fn escalation_handoff_produces_migrated_response() -> Result<()> {
         || std::env::var("SERVO_SECONDARY_WEBDRIVER_URL").is_err()
     {
         eprintln!(
-            "[week12] skipping: SERVO_WEBDRIVER_URL or \
+            "[escalation-smoke] skipping: SERVO_WEBDRIVER_URL or \
              SERVO_SECONDARY_WEBDRIVER_URL not set"
         );
         return Ok(());
@@ -84,10 +84,10 @@ async fn escalation_handoff_produces_migrated_response() -> Result<()> {
     let (fixture_url, fixture_task) = if is_loopback_endpoint(&primary_endpoint) {
         let (addr, task) = start_fixture_server().await?;
         let url = format!("http://{addr}/");
-        eprintln!("[week12] local fixture server at {url}");
+        eprintln!("[escalation-smoke] local fixture server at {url}");
         (url, Some(task))
     } else {
-        eprintln!("[week12] remote endpoint detected; using data URL fixture");
+        eprintln!("[escalation-smoke] remote endpoint detected; using data URL fixture");
         (DATA_FIXTURE_URL.to_string(), None)
     };
 
@@ -107,7 +107,7 @@ async fn escalation_handoff_produces_migrated_response() -> Result<()> {
         var pageId = __pneuma_private_ffi.createPage();
         var nav1 = JSON.parse(__pneuma_private_ffi.navigate(pageId, "{url}", "{{}}"));
         var nav2 = JSON.parse(__pneuma_private_ffi.navigate(pageId, "{url}", "{{}}"));
-        globalThis.__pneuma_week12_result = {{
+        globalThis.__pneuma_escalation_result = {{
             nav1_ok:       nav1.ok       === true,
             nav1_engine:   nav1.engine   ?? "unknown",
             nav1_migrated: nav1.migrated === true,
@@ -123,37 +123,37 @@ async fn escalation_handoff_produces_migrated_response() -> Result<()> {
 
     // Retrieve via direct eval - no JSON.stringify to avoid double-encoding.
     assert_eq!(
-        runtime.eval_expression("__pneuma_week12_result.nav1_ok")?,
+        runtime.eval_expression("__pneuma_escalation_result.nav1_ok")?,
         "true",
         "nav1 should succeed"
     );
     assert_eq!(
-        runtime.eval_expression("__pneuma_week12_result.nav1_engine === 'servo'")?,
+        runtime.eval_expression("__pneuma_escalation_result.nav1_engine === 'servo'")?,
         "true",
         "nav1 should be served by primary Servo"
     );
     assert_eq!(
-        runtime.eval_expression("__pneuma_week12_result.nav1_migrated")?,
+        runtime.eval_expression("__pneuma_escalation_result.nav1_migrated")?,
         "true",
         "nav1 should be migrated because handoff completed during first navigate"
     );
     assert_eq!(
-        runtime.eval_expression("__pneuma_week12_result.nav2_ok")?,
+        runtime.eval_expression("__pneuma_escalation_result.nav2_ok")?,
         "true",
         "nav2 should succeed"
     );
     assert_eq!(
-        runtime.eval_expression("__pneuma_week12_result.nav2_engine === 'servo'")?,
+        runtime.eval_expression("__pneuma_escalation_result.nav2_engine === 'servo'")?,
         "true",
         "nav2 should be served by Servo (primary or secondary proxy)"
     );
     assert_eq!(
-        runtime.eval_expression("__pneuma_week12_result.nav2_migrated")?,
+        runtime.eval_expression("__pneuma_escalation_result.nav2_migrated")?,
         "true",
         "nav2 should be stamped migrated after escalation handoff"
     );
 
-    eprintln!("[week12] all assertions passed");
+    eprintln!("[escalation-smoke] all assertions passed");
     if let Some(task) = fixture_task {
         task.abort();
     }

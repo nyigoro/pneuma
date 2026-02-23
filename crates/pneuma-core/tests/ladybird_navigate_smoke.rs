@@ -1,4 +1,4 @@
-//! Week 18 Ladybird broker smoke test.
+//! Ladybird broker smoke test.
 //!
 //! Requires:
 //! - `--features ladybird`
@@ -7,7 +7,7 @@
 //! Run with:
 //!   CC=clang-20 CXX=clang++-20 \
 //!   LADYBIRD_BUILD_DIR=/path/to/ladybird/Build/debug-clang20 \
-//!   cargo test -p pneuma-core --test week18_ladybird_navigate_smoke \
+//!   cargo test -p pneuma-core --test ladybird_navigate_smoke \
 //!     --features ladybird -- --ignored --nocapture
 
 #[cfg(feature = "ladybird")]
@@ -18,7 +18,7 @@ use anyhow::Result;
 #[ignore = "requires ladybird feature, LADYBIRD_BUILD_DIR, and service binaries"]
 async fn ladybird_navigate_via_broker_returns_title() -> Result<()> {
     if std::env::var("LADYBIRD_BUILD_DIR").is_err() {
-        eprintln!("[week18] skipping: LADYBIRD_BUILD_DIR not set");
+        eprintln!("[ladybird-nav] skipping: LADYBIRD_BUILD_DIR not set");
         return Ok(());
     }
 
@@ -39,7 +39,7 @@ async fn ladybird_navigate_via_broker_returns_title() -> Result<()> {
         let page_id = handle_for_nav.create_page()?;
         handle_for_nav.navigate(
             page_id,
-            "data:text/html,<title>Week18</title><h1>ok</h1>".to_string(),
+            "data:text/html,<title>LadybirdNavSmoke</title><h1>ok</h1>".to_string(),
             "{}".to_string(),
         )
     })
@@ -54,13 +54,13 @@ async fn ladybird_navigate_via_broker_returns_title() -> Result<()> {
         "expected engine=ladybird, got: {response}"
     );
     assert!(
-        response.contains("Week18"),
-        "expected title to contain Week18, got: {response}"
+        response.contains("LadybirdNavSmoke"),
+        "expected title to contain LadybirdNavSmoke, got: {response}"
     );
 
     let handle_for_shutdown = handle.clone();
     let _ = tokio::task::spawn_blocking(move || handle_for_shutdown.shutdown()).await;
 
-    eprintln!("[week18] broker Ladybird navigate smoke passed");
+    eprintln!("[ladybird-nav] broker Ladybird navigate smoke passed");
     Ok(())
 }

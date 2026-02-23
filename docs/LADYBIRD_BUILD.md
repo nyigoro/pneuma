@@ -55,3 +55,12 @@ cargo test -p pneuma-ladybird-shim --features ladybird
 
 Run only one Ladybird configure at a time. Concurrent configure/build commands
 can block on vcpkg filesystem locks.
+
+## Session State Migration
+
+`import_state` is a no-op on `LadybirdEngine`. When the broker escalates
+from Servo to Ladybird, cookies and localStorage from the Servo session
+are discarded. Ladybird starts with a clean browser context.
+
+This is intentional. Session state migration to Ladybird is not supported
+in this milestone.

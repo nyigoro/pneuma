@@ -1,10 +1,10 @@
-//! Week 14 runtime tests - async eval resolution via QuickJS job pump.
+//! Runtime tests - async eval resolution via QuickJS job pump.
 //!
 //! These tests exercise the JS runtime in isolation: no Servo endpoints,
 //! no broker service. The broker channel is created but never consumed.
 //!
 //! Run with:
-//!   cargo test -p pneuma-core --test week14_async_eval_runtime
+//!   cargo test -p pneuma-core --test async_eval_runtime
 
 use anyhow::Result;
 use pneuma_broker::handle::BrokerHandle;
@@ -39,13 +39,13 @@ fn execute_script_pumps_microtasks() -> Result<()> {
     let rt = make_runtime()?;
 
     // Promise.resolve().then(...) schedules a microtask.
-    // Without job pumping, __week14 stays 0 after execute_script returns.
+    // Without job pumping, __async_eval stays 0 after execute_script returns.
     rt.execute_script(
-        "globalThis.__week14 = 0; \
-         Promise.resolve().then(function() { globalThis.__week14 = 42; });",
+        "globalThis.__async_eval = 0; \
+         Promise.resolve().then(function() { globalThis.__async_eval = 42; });",
     )?;
 
-    let result = rt.eval_expression("__week14")?;
+    let result = rt.eval_expression("__async_eval")?;
     assert_eq!(
         result, "42",
         "microtask should have run before execute_script returned"

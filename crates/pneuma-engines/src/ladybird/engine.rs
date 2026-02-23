@@ -86,6 +86,9 @@ impl HeadlessEngine for LadybirdEngine {
     }
 
     async fn import_state(&self, _state: MigrationEnvelope) -> anyhow::Result<()> {
-        anyhow::bail!("LadybirdEngine::import_state not wired yet")
+        // Ladybird does not support session state migration in this milestone.
+        // Accept and discard the envelope so escalation can proceed with a
+        // clean browser context.
+        Ok(())
     }
 }

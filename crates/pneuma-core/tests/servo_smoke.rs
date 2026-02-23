@@ -3,17 +3,17 @@ use std::process::Command;
 
 #[test]
 #[ignore = "requires SERVO_BIN or SERVO_WEBDRIVER_URL and external network access"]
-fn week7_servo_smoke() {
+fn servo_smoke() {
     let has_servo_env =
         std::env::var("SERVO_BIN").is_ok() || std::env::var("SERVO_WEBDRIVER_URL").is_ok();
     if !has_servo_env {
-        eprintln!("skipping: set SERVO_BIN or SERVO_WEBDRIVER_URL to run Week 7 smoke test");
+        eprintln!("skipping: set SERVO_BIN or SERVO_WEBDRIVER_URL to run servo smoke test");
         return;
     }
 
-    let script_path = std::env::temp_dir().join(format!("pneuma-week7-servo-{}.js", std::process::id()));
+    let script_path = std::env::temp_dir().join(format!("pneuma-servo-smoke-{}.js", std::process::id()));
     // NOTE: This uses direct FFI calls for deterministic execution while runtime-level
-    // async promise scheduling is still out of scope for Week 7.
+    // async promise scheduling is still out of scope for this smoke test.
     let script = r#"
 const nav = JSON.parse(__pneuma_private_ffi.navigate(1, "https://example.com", "{}"));
 const title = JSON.parse(__pneuma_private_ffi.evaluate(1, "document.title"));
