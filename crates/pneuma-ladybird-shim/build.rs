@@ -95,6 +95,7 @@ fn main() {
         .cpp(true)
         .compiler("clang++-20")
         .flag("-std=c++23")
+        .flag("-Wno-unqualified-std-cast-call")
         .include(&ladybird_src)
         .include(ladybird_src.join("Libraries"))
         .include(&vcpkg_include)

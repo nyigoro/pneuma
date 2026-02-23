@@ -161,11 +161,6 @@ pneuma_ladybird_browser_create(int width, int height)
         browser->load_complete = true;
     };
 
-    // NOTE: did_connect_devtools_client() was added during Week 19 stabilization.
-    // It may not be required for the title-sentinel evaluate path. Verify and
-    // remove if unnecessary during Week 20 hardening.
-    browser->view->did_connect_devtools_client();
-
     return browser;
 }
 
