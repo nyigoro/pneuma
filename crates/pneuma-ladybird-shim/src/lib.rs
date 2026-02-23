@@ -72,6 +72,26 @@ mod bridge {
             out_error: *mut *mut c_char,
         ) -> c_int;
 
+        fn pneuma_ladybird_screenshot(
+            browser: *mut PneumaLadybirdBrowser,
+            full_page: c_int,
+            timeout_ms: c_int,
+            out_path: *mut *mut c_char,
+            out_error: *mut *mut c_char,
+        ) -> c_int;
+
+        fn pneuma_ladybird_set_viewport(
+            browser: *mut PneumaLadybirdBrowser,
+            width: c_int,
+            height: c_int,
+        ) -> c_int;
+
+        fn pneuma_ladybird_get_viewport(
+            browser: *mut PneumaLadybirdBrowser,
+            out_width: *mut c_int,
+            out_height: *mut c_int,
+        ) -> c_int;
+
         fn pneuma_ladybird_free_string(ptr: *mut c_char);
 
         fn pneuma_ladybird_browser_destroy(browser: *mut PneumaLadybirdBrowser);
@@ -89,6 +109,18 @@ mod bridge {
         Evaluate {
             script: String,
             reply: oneshot::Sender<Result<String>>,
+        },
+        Screenshot {
+            full_page: bool,
+            reply: oneshot::Sender<Result<String>>,
+        },
+        SetViewport {
+            width: u32,
+            height: u32,
+            reply: oneshot::Sender<Result<()>>,
+        },
+        GetViewport {
+            reply: oneshot::Sender<Result<(u32, u32)>>,
         },
         Shutdown,
     }
@@ -150,6 +182,18 @@ mod bridge {
                             let result = do_evaluate(browser, &script);
                             let _ = reply.send(result);
                         }
+                        Ok(Command::Screenshot { full_page, reply }) => {
+                            let result = do_screenshot(browser, full_page);
+                            let _ = reply.send(result);
+                        }
+                        Ok(Command::SetViewport { width, height, reply }) => {
+                            let result = do_set_viewport(browser, width, height);
+                            let _ = reply.send(result);
+                        }
+                        Ok(Command::GetViewport { reply }) => {
+                            let result = do_get_viewport(browser);
+                            let _ = reply.send(result);
+                        }
                         Ok(Command::Shutdown) | Err(_) => break,
                     }
                 }
@@ -194,6 +238,49 @@ mod bridge {
                 script,
                 reply: reply_tx,
             })
+            .map_err(|_| anyhow!("Ladybird thread has exited"))?;
+        reply_rx
+            .await
+            .context("Ladybird thread dropped reply sender")?
+    }
+
+    /// Capture a screenshot and return a file path.
+    pub async fn screenshot(handle: &LadybirdHandle, full_page: bool) -> Result<String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        handle
+            .tx
+            .send(Command::Screenshot {
+                full_page,
+                reply: reply_tx,
+            })
+            .map_err(|_| anyhow!("Ladybird thread has exited"))?;
+        reply_rx
+            .await
+            .context("Ladybird thread dropped reply sender")?
+    }
+
+    /// Set the viewport size (pixels).
+    pub async fn set_viewport(handle: &LadybirdHandle, width: u32, height: u32) -> Result<()> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        handle
+            .tx
+            .send(Command::SetViewport {
+                width,
+                height,
+                reply: reply_tx,
+            })
+            .map_err(|_| anyhow!("Ladybird thread has exited"))?;
+        reply_rx
+            .await
+            .context("Ladybird thread dropped reply sender")?
+    }
+
+    /// Get the viewport size (pixels).
+    pub async fn get_viewport(handle: &LadybirdHandle) -> Result<(u32, u32)> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        handle
+            .tx
+            .send(Command::GetViewport { reply: reply_tx })
             .map_err(|_| anyhow!("Ladybird thread has exited"))?;
         reply_rx
             .await
@@ -301,10 +388,78 @@ mod bridge {
             }
         }
     }
+
+    fn do_screenshot(browser: *mut PneumaLadybirdBrowser, full_page: bool) -> Result<String> {
+        let mut out_path: *mut c_char = std::ptr::null_mut();
+        let mut out_error: *mut c_char = std::ptr::null_mut();
+
+        let status = unsafe {
+            pneuma_ladybird_screenshot(
+                browser,
+                if full_page { 1 } else { 0 },
+                NAVIGATE_TIMEOUT_MS,
+                &mut out_path,
+                &mut out_error,
+            )
+        };
+
+        let take_string = |ptr: *mut c_char| -> String {
+            if ptr.is_null() {
+                return String::new();
+            }
+            let s = unsafe { CStr::from_ptr(ptr) }
+                .to_string_lossy()
+                .into_owned();
+            unsafe { pneuma_ladybird_free_string(ptr) };
+            s
+        };
+
+        match status {
+            PNEUMA_OK => Ok(take_string(out_path)),
+            PNEUMA_TIMEOUT => {
+                take_string(out_error);
+                bail!("Ladybird screenshot timed out after {}ms", NAVIGATE_TIMEOUT_MS)
+            }
+            PNEUMA_INVALID_ARG => {
+                let msg = take_string(out_error);
+                bail!("Ladybird screenshot invalid argument: {msg}")
+            }
+            PNEUMA_RUNTIME_ERR => {
+                let msg = take_string(out_error);
+                bail!("Ladybird screenshot error: {msg}")
+            }
+            other => {
+                let msg = take_string(out_error);
+                bail!("Ladybird screenshot unknown status {other}: {msg}")
+            }
+        }
+    }
+
+    fn do_set_viewport(browser: *mut PneumaLadybirdBrowser, width: u32, height: u32) -> Result<()> {
+        let status = unsafe { pneuma_ladybird_set_viewport(browser, width as c_int, height as c_int) };
+        if status == PNEUMA_OK {
+            Ok(())
+        } else {
+            bail!("Ladybird set_viewport failed with status {status}")
+        }
+    }
+
+    fn do_get_viewport(browser: *mut PneumaLadybirdBrowser) -> Result<(u32, u32)> {
+        let mut w: c_int = 0;
+        let mut h: c_int = 0;
+        let status = unsafe { pneuma_ladybird_get_viewport(browser, &mut w, &mut h) };
+        if status == PNEUMA_OK {
+            Ok((w as u32, h as u32))
+        } else {
+            bail!("Ladybird get_viewport failed with status {status}")
+        }
+    }
 }
 
 #[cfg(feature = "ladybird")]
-pub use bridge::{evaluate, launch, navigate, LadybirdHandle};
+pub use bridge::{
+    evaluate, get_viewport, launch, navigate, screenshot, set_viewport, LadybirdHandle,
+};
 
 // ---------------------------------------------------------------------------
 // Tests

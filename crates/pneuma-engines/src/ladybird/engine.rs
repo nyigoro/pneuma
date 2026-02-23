@@ -1,9 +1,18 @@
 use async_trait::async_trait;
+#[cfg(feature = "ladybird")]
+use anyhow::Context;
 
 use crate::{EngineKind, HeadlessEngine, MigrationEnvelope};
 
 #[cfg(feature = "ladybird")]
-use pneuma_ladybird_shim::{evaluate as shim_evaluate, navigate as shim_navigate, LadybirdHandle};
+use pneuma_ladybird_shim::{
+    evaluate as shim_evaluate,
+    get_viewport as shim_get_viewport,
+    navigate as shim_navigate,
+    screenshot as shim_screenshot,
+    set_viewport as shim_set_viewport,
+    LadybirdHandle,
+};
 
 pub struct LadybirdEngine {
     #[cfg(feature = "ladybird")]
@@ -66,15 +75,34 @@ impl HeadlessEngine for LadybirdEngine {
     }
 
     async fn screenshot(&self) -> anyhow::Result<Vec<u8>> {
-        anyhow::bail!("LadybirdEngine::screenshot not wired yet")
+        #[cfg(feature = "ladybird")]
+        {
+            let path = shim_screenshot(&self.handle, false).await?;
+            let bytes = tokio::fs::read(&path)
+                .await
+                .with_context(|| format!("failed to read Ladybird screenshot at {path}"))?;
+            return Ok(bytes);
+        }
+        #[cfg(not(feature = "ladybird"))]
+        anyhow::bail!("LadybirdEngine::screenshot requires the ladybird feature")
     }
 
     async fn set_viewport(&self, _width: u32, _height: u32) -> anyhow::Result<()> {
-        anyhow::bail!("LadybirdEngine::set_viewport not wired yet")
+        #[cfg(feature = "ladybird")]
+        {
+            return shim_set_viewport(&self.handle, _width, _height).await;
+        }
+        #[cfg(not(feature = "ladybird"))]
+        anyhow::bail!("LadybirdEngine::set_viewport requires the ladybird feature")
     }
 
     async fn get_viewport(&self) -> anyhow::Result<(u32, u32)> {
-        anyhow::bail!("LadybirdEngine::get_viewport not wired yet")
+        #[cfg(feature = "ladybird")]
+        {
+            return shim_get_viewport(&self.handle).await;
+        }
+        #[cfg(not(feature = "ladybird"))]
+        anyhow::bail!("LadybirdEngine::get_viewport requires the ladybird feature")
     }
 
     async fn close(&self) -> anyhow::Result<()> {

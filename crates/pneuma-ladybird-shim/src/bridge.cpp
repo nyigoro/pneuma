@@ -8,6 +8,7 @@
 #include <AK/JsonValue.h>
 #include <AK/LexicalPath.h>
 #include <LibCore/EventLoop.h>
+#include <LibCore/Promise.h>
 #include <LibGfx/SystemTheme.h>
 #include <LibMain/Main.h>
 #include <LibURL/Parser.h>
@@ -17,6 +18,7 @@
 #include <LibWebView/HeadlessWebView.h>
 #include <LibWebView/Options.h>
 #include <LibWebView/Utilities.h>
+#include <LibWebView/ViewImplementation.h>
 
 #include <chrono>
 #include <cstdio>
@@ -47,16 +49,20 @@ struct PneumaLadybirdBrowser {
     // Stable storage for Main::Arguments.
     // ArgsParser::parse() asserts arguments.strings is non-empty.
     ByteString arg0_storage;
-    char* argv_storage[1];
-    StringView strings_storage[1];
+    ByteString arg1_storage;
+    char* argv_storage[2];
+    StringView strings_storage[2];
 
     OwnPtr<WebView::HeadlessWebView> view;
+    int viewport_width { 0 };
+    int viewport_height { 0 };
 
     // Load state — written from event loop callbacks, read from pump loop.
     // Single-threaded: no atomics needed, volatile prevents optimizer elision.
     volatile bool load_complete { false };
     volatile bool load_failed { false };
     volatile bool title_seen { false };
+    volatile bool ready_to_paint { false };
     ByteString last_title_utf8;
     ByteString last_error;
 
@@ -65,11 +71,41 @@ struct PneumaLadybirdBrowser {
     bool eval_failed { false };
     ByteString eval_result;
     ByteString eval_error;
+
+    volatile bool screenshot_complete { false };
+    bool screenshot_failed { false };
+    ByteString screenshot_path;
 };
 
 // ---------------------------------------------------------------------------
 // C-ABI exports
 // ---------------------------------------------------------------------------
+
+static void
+attach_screenshot_promise(
+    PneumaLadybirdBrowser* browser,
+    NonnullRefPtr<Core::Promise<LexicalPath>> promise)
+{
+    promise->when_resolved([browser](auto&& path) -> ErrorOr<void> {
+        browser->screenshot_path = ByteString(path.string());
+        browser->screenshot_complete = true;
+        return {};
+    });
+    promise->when_rejected([browser](auto&& error) {
+        browser->screenshot_failed = true;
+        browser->screenshot_complete = true;
+        ByteString msg;
+        auto literal = error.string_literal();
+        if (!literal.is_empty()) {
+            msg = ByteString(literal);
+        } else if (error.is_errno()) {
+            msg = ByteString::formatted("errno {}: {}", error.code(), strerror(error.code()));
+        } else {
+            msg = ByteString("screenshot failed");
+        }
+        browser->screenshot_path = move(msg);
+    });
+}
 
 extern "C" PneumaLadybirdBrowser*
 pneuma_ladybird_browser_create(int width, int height)
@@ -78,15 +114,22 @@ pneuma_ladybird_browser_create(int width, int height)
     if (!browser)
         return nullptr;
 
-    // Build non-empty Main::Arguments with program name.
+    // Ensure a valid download directory for screenshots.
+    if (!getenv("XDG_DOWNLOAD_DIR"))
+        setenv("XDG_DOWNLOAD_DIR", "/tmp", 0);
+
+    // Build non-empty Main::Arguments with program name and headless mode.
     browser->arg0_storage = ByteString("pneuma-ladybird");
     browser->argv_storage[0] = const_cast<char*>(browser->arg0_storage.characters());
     browser->strings_storage[0] = StringView(browser->arg0_storage);
+    browser->arg1_storage = ByteString("--headless=manual");
+    browser->argv_storage[1] = const_cast<char*>(browser->arg1_storage.characters());
+    browser->strings_storage[1] = StringView(browser->arg1_storage);
 
     Main::Arguments arguments {
-        .argc = 1,
+        .argc = 2,
         .argv = browser->argv_storage,
-        .strings = Span<StringView>(browser->strings_storage, 1),
+        .strings = Span<StringView>(browser->strings_storage, 2),
     };
 
     // Initialize Application — creates the event loop and launches services.
@@ -127,6 +170,8 @@ pneuma_ladybird_browser_create(int width, int height)
         delete browser;
         return nullptr;
     }
+    browser->viewport_width = width;
+    browser->viewport_height = height;
 
     browser->view->on_title_change = [browser](auto const& utf16_title) {
         auto utf8_string = utf16_title.to_utf8();
@@ -152,6 +197,10 @@ pneuma_ladybird_browser_create(int width, int height)
     browser->view->on_load_finish = [browser](auto const& url) {
         (void)url;
         browser->load_complete = true;
+    };
+
+    browser->view->on_ready_to_paint = [browser]() {
+        browser->ready_to_paint = true;
     };
 
     // on_web_content_crashed takes no arguments.
@@ -309,6 +358,89 @@ pneuma_ladybird_evaluate(
     }
 
     *out_result = strdup(browser->eval_result.characters());
+    return PNEUMA_OK;
+}
+
+extern "C" int
+pneuma_ladybird_screenshot(
+    PneumaLadybirdBrowser* browser,
+    int full_page,
+    int timeout_ms,
+    char** out_path,
+    char** out_error)
+{
+    if (!browser || !out_path || !out_error)
+        return PNEUMA_INVALID_ARG;
+
+    *out_path = nullptr;
+    *out_error = nullptr;
+
+    browser->screenshot_complete = false;
+    browser->screenshot_failed = false;
+    browser->screenshot_path = {};
+
+    auto type = full_page
+        ? WebView::ViewImplementation::ScreenshotType::Full
+        : WebView::ViewImplementation::ScreenshotType::Visible;
+
+    auto deadline = std::chrono::steady_clock::now()
+        + std::chrono::milliseconds(timeout_ms);
+    auto& event_loop = Core::EventLoop::current();
+
+    if (!full_page) {
+        while (!browser->ready_to_paint) {
+            event_loop.pump(Core::EventLoop::WaitMode::PollForEvents);
+            if (std::chrono::steady_clock::now() >= deadline) {
+                *out_error = strdup("screenshot timed out waiting for first paint");
+                return PNEUMA_TIMEOUT;
+            }
+        }
+    }
+
+    auto promise = browser->view->take_screenshot(type);
+    attach_screenshot_promise(browser, promise);
+
+    while (!browser->screenshot_complete) {
+        event_loop.pump(Core::EventLoop::WaitMode::PollForEvents);
+        if (std::chrono::steady_clock::now() >= deadline) {
+            *out_error = strdup("screenshot timed out");
+            return PNEUMA_TIMEOUT;
+        }
+    }
+
+    if (browser->screenshot_failed) {
+        *out_error = strdup(browser->screenshot_path.characters());
+        return PNEUMA_RUNTIME_ERR;
+    }
+
+    *out_path = strdup(browser->screenshot_path.characters());
+    return PNEUMA_OK;
+}
+
+extern "C" int
+pneuma_ladybird_set_viewport(
+    PneumaLadybirdBrowser* browser,
+    int width,
+    int height)
+{
+    if (!browser || width <= 0 || height <= 0)
+        return PNEUMA_INVALID_ARG;
+    browser->view->set_window_size({ width, height });
+    browser->viewport_width = width;
+    browser->viewport_height = height;
+    return PNEUMA_OK;
+}
+
+extern "C" int
+pneuma_ladybird_get_viewport(
+    PneumaLadybirdBrowser* browser,
+    int* out_width,
+    int* out_height)
+{
+    if (!browser || !out_width || !out_height)
+        return PNEUMA_INVALID_ARG;
+    *out_width = browser->viewport_width;
+    *out_height = browser->viewport_height;
     return PNEUMA_OK;
 }
 
