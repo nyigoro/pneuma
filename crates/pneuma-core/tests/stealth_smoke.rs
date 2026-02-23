@@ -74,5 +74,42 @@ async fn stealth_patches_navigator_webdriver() -> Result<()> {
     let sw = runtime.eval_expression("__stealth2.screenWidth")?;
     assert_eq!(sw, "1920", "screen.width should be 1920");
 
+    runtime.execute_script(
+        r#"
+        (async () => {
+            var page = await ghost.open(
+                "data:text/html,<title>Stealth3</title>",
+                { stealth_level: 3 }
+            );
+            globalThis.__stealth3 = {
+                canvasNonEmpty: await page.evaluate(() => {
+                    const c = document.createElement("canvas");
+                    c.width = 10;
+                    c.height = 10;
+                    const ctx = c.getContext("2d");
+                    ctx.fillStyle = "red";
+                    ctx.fillRect(0, 0, 10, 10);
+                    return c.toDataURL().length > 0;
+                }),
+                arialPresent: await page.evaluate(() =>
+                    document.fonts ? document.fonts.check("16px Arial") : null
+                ),
+                fakeAbsent: await page.evaluate(() =>
+                    document.fonts ? !document.fonts.check("16px FakeFontXYZ123") : null
+                ),
+            };
+        })();
+    "#,
+    )?;
+
+    let canvas = runtime.eval_expression("__stealth3.canvasNonEmpty")?;
+    assert_eq!(canvas, "true", "canvas toDataURL should be non-empty");
+
+    let arial = runtime.eval_expression("__stealth3.arialPresent")?;
+    assert_eq!(arial, "true", "Arial should be present");
+
+    let fake = runtime.eval_expression("__stealth3.fakeAbsent")?;
+    assert_eq!(fake, "true", "FakeFontXYZ123 should be absent");
+
     Ok(())
 }
