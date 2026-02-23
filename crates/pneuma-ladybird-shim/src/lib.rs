@@ -64,6 +64,14 @@ mod bridge {
             out_error: *mut *mut c_char,
         ) -> c_int;
 
+        fn pneuma_ladybird_evaluate(
+            browser: *mut PneumaLadybirdBrowser,
+            script: *const c_char,
+            timeout_ms: c_int,
+            out_result: *mut *mut c_char,
+            out_error: *mut *mut c_char,
+        ) -> c_int;
+
         fn pneuma_ladybird_free_string(ptr: *mut c_char);
 
         fn pneuma_ladybird_browser_destroy(browser: *mut PneumaLadybirdBrowser);
@@ -76,6 +84,10 @@ mod bridge {
     enum Command {
         Navigate {
             url: String,
+            reply: oneshot::Sender<Result<String>>,
+        },
+        Evaluate {
+            script: String,
             reply: oneshot::Sender<Result<String>>,
         },
         Shutdown,
@@ -134,6 +146,10 @@ mod bridge {
                             let result = do_navigate(browser, &url);
                             let _ = reply.send(result);
                         }
+                        Ok(Command::Evaluate { script, reply }) => {
+                            let result = do_evaluate(browser, &script);
+                            let _ = reply.send(result);
+                        }
                         Ok(Command::Shutdown) | Err(_) => break,
                     }
                 }
@@ -161,6 +177,21 @@ mod bridge {
             .tx
             .send(Command::Navigate {
                 url,
+                reply: reply_tx,
+            })
+            .map_err(|_| anyhow!("Ladybird thread has exited"))?;
+        reply_rx
+            .await
+            .context("Ladybird thread dropped reply sender")?
+    }
+
+    /// Evaluate JavaScript in the current page context and return JSON-serialized result.
+    pub async fn evaluate(handle: &LadybirdHandle, script: String) -> Result<String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        handle
+            .tx
+            .send(Command::Evaluate {
+                script,
                 reply: reply_tx,
             })
             .map_err(|_| anyhow!("Ladybird thread has exited"))?;
@@ -223,10 +254,57 @@ mod bridge {
             }
         }
     }
+
+    fn do_evaluate(browser: *mut PneumaLadybirdBrowser, script: &str) -> Result<String> {
+        let script_c = CString::new(script).context("script contained interior null byte")?;
+        let mut out_result: *mut c_char = std::ptr::null_mut();
+        let mut out_error: *mut c_char = std::ptr::null_mut();
+
+        let status = unsafe {
+            pneuma_ladybird_evaluate(
+                browser,
+                script_c.as_ptr(),
+                NAVIGATE_TIMEOUT_MS,
+                &mut out_result,
+                &mut out_error,
+            )
+        };
+
+        let take_string = |ptr: *mut c_char| -> String {
+            if ptr.is_null() {
+                return String::new();
+            }
+            let s = unsafe { CStr::from_ptr(ptr) }
+                .to_string_lossy()
+                .into_owned();
+            unsafe { pneuma_ladybird_free_string(ptr) };
+            s
+        };
+
+        match status {
+            PNEUMA_OK => Ok(take_string(out_result)),
+            PNEUMA_TIMEOUT => {
+                take_string(out_error);
+                bail!("Ladybird evaluate timed out after {}ms", NAVIGATE_TIMEOUT_MS)
+            }
+            PNEUMA_INVALID_ARG => {
+                let msg = take_string(out_error);
+                bail!("Ladybird evaluate invalid argument: {msg}")
+            }
+            PNEUMA_RUNTIME_ERR => {
+                let msg = take_string(out_error);
+                bail!("Ladybird evaluate error: {msg}")
+            }
+            other => {
+                let msg = take_string(out_error);
+                bail!("Ladybird evaluate unknown status {other}: {msg}")
+            }
+        }
+    }
 }
 
 #[cfg(feature = "ladybird")]
-pub use bridge::{launch, navigate, LadybirdHandle};
+pub use bridge::{evaluate, launch, navigate, LadybirdHandle};
 
 // ---------------------------------------------------------------------------
 // Tests

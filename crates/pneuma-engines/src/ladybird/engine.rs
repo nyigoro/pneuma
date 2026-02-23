@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use crate::{EngineKind, HeadlessEngine, MigrationEnvelope};
 
 #[cfg(feature = "ladybird")]
-use pneuma_ladybird_shim::{navigate as shim_navigate, LadybirdHandle};
+use pneuma_ladybird_shim::{evaluate as shim_evaluate, navigate as shim_navigate, LadybirdHandle};
 
 pub struct LadybirdEngine {
     #[cfg(feature = "ladybird")]
@@ -55,8 +55,14 @@ impl HeadlessEngine for LadybirdEngine {
         anyhow::bail!("LadybirdEngine::navigate requires the ladybird feature")
     }
 
-    async fn evaluate(&self, _script: &str) -> anyhow::Result<String> {
-        anyhow::bail!("LadybirdEngine::evaluate not wired yet")
+    async fn evaluate(&self, script: &str) -> anyhow::Result<String> {
+        let _ = script;
+        #[cfg(feature = "ladybird")]
+        {
+            return shim_evaluate(&self.handle, script.to_string()).await;
+        }
+        #[cfg(not(feature = "ladybird"))]
+        anyhow::bail!("LadybirdEngine::evaluate requires the ladybird feature")
     }
 
     async fn screenshot(&self) -> anyhow::Result<Vec<u8>> {

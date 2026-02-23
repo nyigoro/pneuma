@@ -5,6 +5,7 @@
 // Core::EventLoop::current() returns the loop bound to that thread.
 
 #include <AK/ByteString.h>
+#include <AK/JsonValue.h>
 #include <AK/LexicalPath.h>
 #include <LibCore/EventLoop.h>
 #include <LibGfx/SystemTheme.h>
@@ -58,6 +59,12 @@ struct PneumaLadybirdBrowser {
     volatile bool title_seen { false };
     ByteString last_title_utf8;
     ByteString last_error;
+
+    volatile bool eval_pending { false };
+    volatile bool eval_complete { false };
+    bool eval_failed { false };
+    ByteString eval_result;
+    ByteString eval_error;
 };
 
 // ---------------------------------------------------------------------------
@@ -123,8 +130,23 @@ pneuma_ladybird_browser_create(int width, int height)
 
     browser->view->on_title_change = [browser](auto const& utf16_title) {
         auto utf8_string = utf16_title.to_utf8();
-        browser->last_title_utf8 = ByteString(utf8_string.bytes_as_string_view());
+        auto title = utf8_string.bytes_as_string_view();
+        browser->last_title_utf8 = ByteString(title);
         browser->title_seen = !browser->last_title_utf8.is_empty();
+
+        if (!browser->eval_pending)
+            return;
+
+        if (title.starts_with(StringView("__pneuma_eval__:", 16))) {
+            browser->eval_result = ByteString(title.substring_view(16));
+            browser->eval_complete = true;
+            browser->eval_pending = false;
+        } else if (title.starts_with(StringView("__pneuma_eval_err__:", 20))) {
+            browser->eval_error = ByteString(title.substring_view(20));
+            browser->eval_failed = true;
+            browser->eval_complete = true;
+            browser->eval_pending = false;
+        }
     };
 
     browser->view->on_load_finish = [browser](auto const& url) {
@@ -138,6 +160,9 @@ pneuma_ladybird_browser_create(int width, int height)
         browser->load_failed = true;
         browser->load_complete = true;
     };
+
+    // Enable DevTools-side callbacks used by the headless view.
+    browser->view->did_connect_devtools_client();
 
     return browser;
 }
@@ -204,6 +229,89 @@ pneuma_ladybird_navigate(
     }
 
     *out_title = strdup(browser->last_title_utf8.characters());
+    return PNEUMA_OK;
+}
+
+extern "C" int
+pneuma_ladybird_evaluate(
+    PneumaLadybirdBrowser* browser,
+    char const* script,
+    int timeout_ms,
+    char** out_result,
+    char** out_error)
+{
+    if (!browser || !script || !out_result || !out_error)
+        return PNEUMA_INVALID_ARG;
+
+    *out_result = nullptr;
+    *out_error = nullptr;
+
+    browser->eval_pending = true;
+    browser->eval_complete = false;
+    browser->eval_failed = false;
+    browser->eval_result = {};
+    browser->eval_error = {};
+
+    auto script_value = String::from_utf8(StringView(script, strlen(script)));
+    if (script_value.is_error()) {
+        browser->eval_pending = false;
+        *out_error = strdup("script is not valid UTF-8");
+        return PNEUMA_INVALID_ARG;
+    }
+
+    auto script_literal = JsonValue(script_value.release_value()).serialized();
+    auto wrapped = String::formatted(
+        "(function(){{"
+        "var __pneuma_prev=document.title;"
+        "try{{"
+        "var __pneuma_r=eval({});"
+        "document.title=\"__pneuma_eval__:\"+JSON.stringify(__pneuma_r);"
+        "}}catch(e){{"
+        "document.title=\"__pneuma_eval_err__:\"+String(e);"
+        "}}"
+        "setTimeout(function(){{document.title=__pneuma_prev;}},0);"
+        "}})()",
+        script_literal);
+    if (wrapped.is_error()) {
+        browser->eval_pending = false;
+        *out_error = strdup("failed to format eval script");
+        return PNEUMA_RUNTIME_ERR;
+    }
+
+    browser->view->run_javascript(wrapped.release_value());
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    auto& event_loop = Core::EventLoop::current();
+
+    while (!browser->eval_complete) {
+        event_loop.pump(Core::EventLoop::WaitMode::PollForEvents);
+        if (std::chrono::steady_clock::now() >= deadline) {
+            browser->eval_pending = false;
+            *out_error = strdup("evaluate timed out");
+            return PNEUMA_TIMEOUT;
+        }
+    }
+
+    // Allow the queued title restoration callback to run before returning.
+    auto is_eval_title_sentinel = [&]() {
+        auto title = StringView(browser->last_title_utf8);
+        return title.starts_with(StringView("__pneuma_eval__:", 16))
+            || title.starts_with(StringView("__pneuma_eval_err__:", 20));
+    };
+    auto restore_deadline = std::chrono::steady_clock::now()
+        + std::chrono::milliseconds(200);
+    while (is_eval_title_sentinel() && std::chrono::steady_clock::now() < restore_deadline)
+        event_loop.pump(Core::EventLoop::WaitMode::PollForEvents);
+
+    if (browser->eval_failed) {
+        auto const* message = browser->eval_error.is_empty()
+            ? "evaluate failed"
+            : browser->eval_error.characters();
+        *out_error = strdup(message);
+        return PNEUMA_RUNTIME_ERR;
+    }
+
+    *out_result = strdup(browser->eval_result.characters());
     return PNEUMA_OK;
 }
 
