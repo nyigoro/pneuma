@@ -5,9 +5,9 @@ use pneuma_engines::{EngineKind, HeadlessEngine};
 /// Abstraction over secondary engine creation, primarily for testability.
 ///
 /// The `target` argument reflects the decision the confidence scorer made
-/// (e.g. `EngineKind::Ladybird`). In Week 10, `Ladybird` is not yet wired, so
-/// all targets map to a secondary Servo proxy. A real Ladybird factory can be
-/// dropped in later without touching service.rs.
+/// (e.g. `EngineKind::Ladybird`). When the `ladybird` feature is enabled and
+/// `LADYBIRD_BUILD_DIR` is set, `EngineKind::Ladybird` routes to
+/// `LadybirdEngine`; otherwise factory falls back to a secondary Servo proxy.
 #[async_trait]
 pub trait EscalationEngineFactory: Send + Sync {
     async fn create_for_escalation(&self, target: EngineKind) -> Result<Box<dyn HeadlessEngine>>;
@@ -23,14 +23,21 @@ pub struct DefaultEscalationEngineFactory;
 #[async_trait]
 impl EscalationEngineFactory for DefaultEscalationEngineFactory {
     async fn create_for_escalation(&self, target: EngineKind) -> Result<Box<dyn HeadlessEngine>> {
-        // Ladybird is not wired yet in Week 10. We proxy all escalation targets
-        // through a secondary Servo instance. This is the explicit temporary
-        // mapping described in the spec.
         match target {
             EngineKind::Ladybird => {
+                #[cfg(feature = "ladybird")]
+                if std::env::var_os("LADYBIRD_BUILD_DIR").is_some() {
+                    tracing::info!(
+                        target: "pneuma_broker",
+                        "escalation target is Ladybird; LADYBIRD_BUILD_DIR set, launching Ladybird secondary"
+                    );
+                    let engine = pneuma_engines::ladybird::LadybirdEngine::launch()?;
+                    return Ok(Box::new(engine));
+                }
+
                 tracing::info!(
                     target: "pneuma_broker",
-                    "escalation target is Ladybird; using secondary Servo proxy (Week 10 temporary mapping)"
+                    "escalation target is Ladybird; using secondary Servo proxy fallback"
                 );
             }
             EngineKind::Servo => {

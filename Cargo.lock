@@ -946,6 +946,7 @@ dependencies = [
  "async-trait",
  "base64",
  "home",
+ "pneuma-ladybird-shim",
  "reqwest",
  "serde",
  "serde_json",

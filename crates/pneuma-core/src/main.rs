@@ -1,5 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
+#[cfg(feature = "ladybird")]
+use pneuma_engines::ladybird::LadybirdEngine;
 use pneuma_engines::servo::ServoEngine;
 
 mod cli;
@@ -30,7 +32,16 @@ async fn main() -> Result<()> {
 async fn spawn_broker_handle(engine: cli::EngineChoice) -> Result<pneuma_broker::handle::BrokerHandle> {
     let runtime_engine: Box<dyn pneuma_engines::HeadlessEngine> = match engine {
         cli::EngineChoice::Servo => Box::new(ServoEngine::launch().await?),
-        cli::EngineChoice::Ladybird => anyhow::bail!("ladybird engine is not wired yet"),
+        cli::EngineChoice::Ladybird => {
+            #[cfg(feature = "ladybird")]
+            {
+                Box::new(LadybirdEngine::launch()?)
+            }
+            #[cfg(not(feature = "ladybird"))]
+            {
+                anyhow::bail!("ladybird engine requires the `ladybird` feature")
+            }
+        }
     };
 
     let (broker_tx, broker_rx) = tokio::sync::mpsc::unbounded_channel();

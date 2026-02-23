@@ -389,7 +389,7 @@ pub async fn run_with_factory<F>(
                     target: "pneuma_broker",
                     page_id,
                     reason = ?escalation_reason,
-                    "EscalateToLadybird decision; attempting handoff to secondary Servo proxy"
+                    "EscalateToLadybird decision; attempting handoff to secondary engine"
                 );
 
                 let handoff_start = Instant::now();

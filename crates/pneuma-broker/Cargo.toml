@@ -6,6 +6,10 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+ladybird = ["pneuma-engines/ladybird"]
+
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true

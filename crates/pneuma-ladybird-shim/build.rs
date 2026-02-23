@@ -4,6 +4,36 @@ use std::process::Command;
 const REQUIRED_CMAKE: &str = "3.30";
 const VCPKG_PINNED_COMMIT: &str = "2fa7118fb2ce0c27ab73e08ab1991f4cb67af880";
 const HELPER_SERVICES: &[&str] = &["RequestServer", "ImageDecoder", "WebContent"];
+const LAGOM_SHARED_LIBS: &[&str] = &[
+    "lagom-ak",
+    "lagom-compress",
+    "lagom-core",
+    "lagom-coreminimal",
+    "lagom-crypto",
+    "lagom-database",
+    "lagom-devtools",
+    "lagom-filesystem",
+    "lagom-gc",
+    "lagom-gfx",
+    "lagom-http",
+    "lagom-idl",
+    "lagom-imagedecoderclient",
+    "lagom-ipc",
+    "lagom-js",
+    "lagom-media",
+    "lagom-regex",
+    "lagom-requests",
+    "lagom-syntax",
+    "lagom-textcodec",
+    "lagom-threading",
+    "lagom-tls",
+    "lagom-unicode",
+    "lagom-url",
+    "lagom-wasm",
+    "lagom-web",
+    "lagom-webview",
+    "lagom-xml",
+];
 
 fn main() {
     // Keep default workspace builds fast.
@@ -76,38 +106,11 @@ fn main() {
         .compile("pneuma_ladybird_sanity");
 
     let lib_dir = build_dir.join("lib");
+    let staged_lib_dir = stage_lagom_runtime_libs(&lib_dir, LAGOM_SHARED_LIBS);
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    println!("cargo:rustc-link-search=native={}", staged_lib_dir.display());
     // Lagom shared libraries - full set required to satisfy all symbol references.
-    for lib in &[
-        "lagom-ak",
-        "lagom-compress",
-        "lagom-core",
-        "lagom-coreminimal",
-        "lagom-crypto",
-        "lagom-database",
-        "lagom-devtools",
-        "lagom-filesystem",
-        "lagom-gc",
-        "lagom-gfx",
-        "lagom-http",
-        "lagom-idl",
-        "lagom-imagedecoderclient",
-        "lagom-ipc",
-        "lagom-js",
-        "lagom-media",
-        "lagom-regex",
-        "lagom-requests",
-        "lagom-syntax",
-        "lagom-textcodec",
-        "lagom-threading",
-        "lagom-tls",
-        "lagom-unicode",
-        "lagom-url",
-        "lagom-wasm",
-        "lagom-web",
-        "lagom-webview",
-        "lagom-xml",
-    ] {
+    for lib in LAGOM_SHARED_LIBS {
         println!("cargo:rustc-link-lib=dylib={lib}");
     }
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
@@ -216,6 +219,49 @@ fn run_cmd(cmd: &mut Command, label: &str) {
     }
 }
 
+fn stage_lagom_runtime_libs(source_lib_dir: &Path, lagom_libs: &[&str]) -> PathBuf {
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("missing OUT_DIR"));
+    let staged_lib_dir = out_dir.join("lagom-runtime-lib");
+    std::fs::create_dir_all(&staged_lib_dir).expect("failed to create staged lagom runtime lib directory");
+
+    let entries = std::fs::read_dir(source_lib_dir)
+        .unwrap_or_else(|error| panic!("failed to read lagom lib directory {}: {error}", source_lib_dir.display()));
+    let names: Vec<String> = entries
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|error| panic!("failed to read lagom lib entry in {}: {error}", source_lib_dir.display()))
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+
+    for lib in lagom_libs {
+        let needle = format!("lib{lib}.so");
+        let mut matched = false;
+        for name in names.iter().filter(|name| name.starts_with(&needle)) {
+            matched = true;
+            let source = source_lib_dir.join(name);
+            let destination = staged_lib_dir.join(name);
+            if std::fs::symlink_metadata(&destination).is_ok() {
+                std::fs::remove_file(&destination).unwrap_or_else(|error| {
+                    panic!("failed to replace staged lagom runtime lib {}: {error}", destination.display())
+                });
+            }
+            create_link_or_copy(&source, &destination);
+        }
+
+        if !matched {
+            panic!(
+                "required lagom shared library `{needle}` not found in {}",
+                source_lib_dir.display()
+            );
+        }
+    }
+
+    staged_lib_dir
+}
+
 fn link_helper_services_into_target_libexec(build_dir: &Path, services: &[&str]) {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("missing OUT_DIR"));
     let target_dir = out_dir
@@ -244,22 +290,32 @@ fn link_helper_services_into_target_libexec(build_dir: &Path, services: &[&str])
 
 #[cfg(unix)]
 fn create_helper_service_link_or_copy(source: &Path, link: &Path) {
-    std::os::unix::fs::symlink(source, link).unwrap_or_else(|error| {
+    create_link_or_copy(source, link);
+}
+
+#[cfg(not(unix))]
+fn create_helper_service_link_or_copy(source: &Path, link: &Path) {
+    create_link_or_copy(source, link);
+}
+
+#[cfg(unix)]
+fn create_link_or_copy(source: &Path, destination: &Path) {
+    std::os::unix::fs::symlink(source, destination).unwrap_or_else(|error| {
         panic!(
-            "failed to create helper symlink {} -> {}: {error}",
-            link.display(),
+            "failed to create symlink {} -> {}: {error}",
+            destination.display(),
             source.display()
         )
     });
 }
 
 #[cfg(not(unix))]
-fn create_helper_service_link_or_copy(source: &Path, link: &Path) {
-    std::fs::copy(source, link).unwrap_or_else(|error| {
+fn create_link_or_copy(source: &Path, destination: &Path) {
+    std::fs::copy(source, destination).unwrap_or_else(|error| {
         panic!(
-            "failed to copy helper service {} -> {}: {error}",
+            "failed to copy file {} -> {}: {error}",
             source.display(),
-            link.display()
+            destination.display()
         )
     });
 }

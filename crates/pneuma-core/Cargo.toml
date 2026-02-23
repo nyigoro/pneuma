@@ -10,6 +10,10 @@ rust-version.workspace = true
 name = "pneuma"
 path = "src/main.rs"
 
+[features]
+default = []
+ladybird = ["pneuma-engines/ladybird", "pneuma-broker/ladybird"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true

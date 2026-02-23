@@ -6,6 +6,10 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+ladybird = ["dep:pneuma-ladybird-shim"]
+
 [dependencies]
 serde.workspace = true
 anyhow.workspace = true
@@ -17,3 +21,4 @@ which = "6.0"
 home = "=0.5.9"
 tracing.workspace = true
 base64.workspace = true
+pneuma-ladybird-shim = { path = "../pneuma-ladybird-shim", optional = true, features = ["ladybird"] }
