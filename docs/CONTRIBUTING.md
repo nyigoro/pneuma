@@ -52,6 +52,18 @@ Download it from the workflow run summary and inspect:
 - session creation response body (`pneuma_engines` debug logs)
 - first evaluate response body (`pneuma_engines` debug logs)
 
+## Servo WebDriver Local Run (Windows)
+
+If Servo is installed via the Windows tech demo bundle, the binary is at:
+
+`C:\Program Files\Servo\Servo Tech Demo\servo.exe`
+
+Start the WebDriver on port 4444:
+
+```powershell
+& "C:\Program Files\Servo\Servo Tech Demo\servo.exe" --webdriver=4444
+```
+
 ## Running the Escalation Smoke Test (WSL + Windows Servo)
 
 The `escalation_to_ladybird_smoke` test requires both a live Servo instance
