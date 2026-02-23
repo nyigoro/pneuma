@@ -6,6 +6,7 @@ members = [
     "crates/pneuma-engines",
     "crates/pneuma-network",
     "crates/pneuma-stealth",
+    "crates/pneuma-transport-stealth",
     "crates/pneuma-js",
     "crates/pneuma-plugin",
     "crates/pneuma-ladybird-shim",

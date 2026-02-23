@@ -54,6 +54,7 @@ mod bridge {
         fn pneuma_ladybird_browser_create(
             width: c_int,
             height: c_int,
+            proxy_server: *const c_char,
         ) -> *mut PneumaLadybirdBrowser;
 
         fn pneuma_ladybird_navigate(
@@ -152,14 +153,42 @@ mod bridge {
     /// Blocks until `Application::initialize` and `HeadlessWebView::create`
     /// complete (or fail). Returns an error if initialization fails.
     pub fn launch() -> Result<LadybirdHandle> {
+        launch_with_proxy(None)
+    }
+
+    /// Launch the Ladybird browser with optional transport proxy routing.
+    ///
+    /// `proxy_server` must be in `host:port` form if provided.
+    pub fn launch_with_proxy(proxy_server: Option<String>) -> Result<LadybirdHandle> {
         let (tx, rx) = mpsc::sync_channel::<Command>(8);
         let (startup_tx, startup_rx) = mpsc::channel::<Result<()>>();
 
         let thread = std::thread::Builder::new()
             .name("ladybird-eventloop".into())
             .spawn(move || {
+                let proxy_server_cstring = match proxy_server {
+                    Some(value) => match CString::new(value) {
+                        Ok(value) => Some(value),
+                        Err(_) => {
+                            let _ = startup_tx.send(Err(anyhow!(
+                                "proxy server contained interior null byte"
+                            )));
+                            return;
+                        }
+                    },
+                    None => None,
+                };
+
                 // SAFETY: browser is created and used exclusively on this thread.
-                let browser = unsafe { pneuma_ladybird_browser_create(1280, 720) };
+                let browser = unsafe {
+                    pneuma_ladybird_browser_create(
+                        1280,
+                        720,
+                        proxy_server_cstring
+                            .as_ref()
+                            .map_or(std::ptr::null(), |value| value.as_ptr()),
+                    )
+                };
 
                 if browser.is_null() {
                     let _ = startup_tx.send(Err(anyhow!(
@@ -458,7 +487,8 @@ mod bridge {
 
 #[cfg(feature = "ladybird")]
 pub use bridge::{
-    evaluate, get_viewport, launch, navigate, screenshot, set_viewport, LadybirdHandle,
+    evaluate, get_viewport, launch, launch_with_proxy, navigate, screenshot, set_viewport,
+    LadybirdHandle,
 };
 
 // ---------------------------------------------------------------------------

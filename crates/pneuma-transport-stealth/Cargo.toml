@@ -1,0 +1,17 @@
+[package]
+name = "pneuma-transport-stealth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pneuma-engines = { path = "../pneuma-engines" }
+tracing.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true

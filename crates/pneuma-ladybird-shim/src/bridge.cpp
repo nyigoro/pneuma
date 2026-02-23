@@ -4,9 +4,13 @@
 // on the dedicated OS thread managed by LadybirdHandle in lib.rs.
 // Core::EventLoop::current() returns the loop bound to that thread.
 
+#include "stealth.h"
+
 #include <AK/ByteString.h>
 #include <AK/JsonValue.h>
 #include <AK/LexicalPath.h>
+#include <AK/Optional.h>
+#include <LibCore/ArgsParser.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/Promise.h>
 #include <LibGfx/SystemTheme.h>
@@ -38,6 +42,19 @@ class PneumaLadybirdApplication final : public WebView::Application {
 
 private:
     explicit PneumaLadybirdApplication() = default;
+
+    virtual void create_platform_arguments(Core::ArgsParser& args_parser) override
+    {
+        args_parser.add_option(Core::ArgsParser::Option {
+            .argument_mode = Core::ArgsParser::OptionArgumentMode::Required,
+            .help_string = "Set transport proxy endpoint in host:port form",
+            .long_name = "proxy-server",
+            .value_name = "host:port",
+            .accept_value = [](StringView value) {
+                return Pneuma::Stealth::normalize_proxy_server(value).has_value();
+            },
+        });
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -50,8 +67,9 @@ struct PneumaLadybirdBrowser {
     // ArgsParser::parse() asserts arguments.strings is non-empty.
     ByteString arg0_storage;
     ByteString arg1_storage;
-    char* argv_storage[2];
-    StringView strings_storage[2];
+    ByteString arg2_storage;
+    char* argv_storage[3];
+    StringView strings_storage[3];
 
     OwnPtr<WebView::HeadlessWebView> view;
     int viewport_width { 0 };
@@ -108,7 +126,7 @@ attach_screenshot_promise(
 }
 
 extern "C" PneumaLadybirdBrowser*
-pneuma_ladybird_browser_create(int width, int height)
+pneuma_ladybird_browser_create(int width, int height, char const* proxy_server_cstr)
 {
     auto* browser = new (std::nothrow) PneumaLadybirdBrowser();
     if (!browser)
@@ -118,6 +136,18 @@ pneuma_ladybird_browser_create(int width, int height)
     if (!getenv("XDG_DOWNLOAD_DIR"))
         setenv("XDG_DOWNLOAD_DIR", "/tmp", 0);
 
+    Optional<ByteString> proxy_server;
+    if (proxy_server_cstr && *proxy_server_cstr) {
+        proxy_server = Pneuma::Stealth::normalize_proxy_server(
+            StringView(proxy_server_cstr, strlen(proxy_server_cstr)));
+        if (!proxy_server.has_value()) {
+            fprintf(stderr, "[pneuma-ladybird] invalid proxy-server argument: %s\n", proxy_server_cstr);
+            delete browser;
+            return nullptr;
+        }
+        Pneuma::Stealth::apply_proxy_environment(*proxy_server);
+    }
+
     // Build non-empty Main::Arguments with program name and headless mode.
     browser->arg0_storage = ByteString("pneuma-ladybird");
     browser->argv_storage[0] = const_cast<char*>(browser->arg0_storage.characters());
@@ -125,11 +155,18 @@ pneuma_ladybird_browser_create(int width, int height)
     browser->arg1_storage = ByteString("--headless=manual");
     browser->argv_storage[1] = const_cast<char*>(browser->arg1_storage.characters());
     browser->strings_storage[1] = StringView(browser->arg1_storage);
+    int argument_count = 2;
+    if (proxy_server.has_value()) {
+        browser->arg2_storage = ByteString::formatted("--proxy-server={}", *proxy_server);
+        browser->argv_storage[2] = const_cast<char*>(browser->arg2_storage.characters());
+        browser->strings_storage[2] = StringView(browser->arg2_storage);
+        argument_count = 3;
+    }
 
     Main::Arguments arguments {
-        .argc = 2,
+        .argc = argument_count,
         .argv = browser->argv_storage,
-        .strings = Span<StringView>(browser->strings_storage, 2),
+        .strings = Span<StringView>(browser->strings_storage, static_cast<size_t>(argument_count)),
     };
 
     // Initialize Application — creates the event loop and launches services.

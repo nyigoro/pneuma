@@ -10,8 +10,9 @@ use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Instant};
 
+use super::stealth::build_proxy_capabilities;
 use crate::{
-    EngineKind, HeadlessEngine, LocalStorageEntry, MigrationCookie, MigrationEnvelope,
+    EngineKind, HeadlessEngine, LocalStorageEntry, MigrationCookie, MigrationEnvelope, ProxyConfig,
 };
 
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -29,6 +30,10 @@ pub struct ServoEngine {
 
 impl ServoEngine {
     pub async fn launch() -> Result<Self> {
+        Self::launch_with_proxy(None).await
+    }
+
+    pub async fn launch_with_proxy(proxy_config: Option<ProxyConfig>) -> Result<Self> {
         let client = reqwest::Client::new();
         let (base_url, process, port_hint) = match std::env::var("SERVO_WEBDRIVER_URL") {
             Ok(base_url) => {
@@ -36,6 +41,7 @@ impl ServoEngine {
                 tracing::info!(
                     target: "pneuma_engines",
                     base_url = %base_url,
+                    has_transport_proxy = proxy_config.is_some(),
                     "attaching to existing Servo WebDriver endpoint"
                 );
                 (base_url, None, None)
@@ -60,26 +66,39 @@ impl ServoEngine {
                     target: "pneuma_engines",
                     servo_bin = %servo_bin.to_string_lossy(),
                     port,
+                    has_transport_proxy = proxy_config.is_some(),
                     "spawned Servo WebDriver process"
                 );
                 (base_url, Some(child), Some(port))
             }
         };
-        Self::initialize(client, base_url, process, port_hint).await
+        Self::initialize(client, base_url, process, port_hint, proxy_config).await
     }
 
     pub async fn launch_with_endpoint(base_url: String) -> Result<Self> {
+        Self::launch_with_endpoint_and_proxy(base_url, None).await
+    }
+
+    pub async fn launch_with_endpoint_and_proxy(
+        base_url: String,
+        proxy_config: Option<ProxyConfig>,
+    ) -> Result<Self> {
         let client = reqwest::Client::new();
         let base_url = normalize_base_url(base_url)?;
         tracing::info!(
             target: "pneuma_engines",
             base_url = %base_url,
+            has_transport_proxy = proxy_config.is_some(),
             "attaching to explicit secondary Servo WebDriver endpoint"
         );
-        Self::initialize(client, base_url, None, None).await
+        Self::initialize(client, base_url, None, None, proxy_config).await
     }
 
     pub async fn launch_spawned() -> Result<Self> {
+        Self::launch_spawned_with_proxy(None).await
+    }
+
+    pub async fn launch_spawned_with_proxy(proxy_config: Option<ProxyConfig>) -> Result<Self> {
         let client = reqwest::Client::new();
         let servo_bin = resolve_servo_binary()?;
         let port = allocate_local_port()?;
@@ -100,9 +119,10 @@ impl ServoEngine {
             target: "pneuma_engines",
             servo_bin = %servo_bin.to_string_lossy(),
             port,
+            has_transport_proxy = proxy_config.is_some(),
             "spawned secondary Servo WebDriver process"
         );
-        Self::initialize(client, base_url, Some(child), Some(port)).await
+        Self::initialize(client, base_url, Some(child), Some(port), proxy_config).await
     }
 
     async fn initialize(
@@ -110,9 +130,10 @@ impl ServoEngine {
         base_url: String,
         mut process: Option<Child>,
         port_hint: Option<u16>,
+        proxy_config: Option<ProxyConfig>,
     ) -> Result<Self> {
         wait_until_ready(&client, &base_url, port_hint, &mut process).await?;
-        let session_id = create_session(&client, &base_url).await?;
+        let session_id = create_session(&client, &base_url, proxy_config.as_ref()).await?;
 
         tracing::info!(
             target: "pneuma_engines",
@@ -229,7 +250,10 @@ impl ServoEngine {
             out.push(MigrationCookie {
                 name: name.to_string(),
                 value: value.to_string(),
-                domain: obj.get("domain").and_then(Value::as_str).map(str::to_string),
+                domain: obj
+                    .get("domain")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
                 path: obj.get("path").and_then(Value::as_str).map(str::to_string),
                 secure: obj.get("secure").and_then(Value::as_bool),
                 http_only: obj
@@ -319,8 +343,8 @@ impl ServoEngine {
     }
 
     async fn import_local_storage_entry(&self, entry: &LocalStorageEntry) -> Result<()> {
-        let key_json = serde_json::to_string(&entry.key)
-            .context("failed to serialize localStorage key")?;
+        let key_json =
+            serde_json::to_string(&entry.key).context("failed to serialize localStorage key")?;
         let value_json = serde_json::to_string(&entry.value)
             .context("failed to serialize localStorage value")?;
         let script = format!("localStorage.setItem({key_json}, {value_json}); true;");
@@ -735,13 +759,63 @@ fn resolve_servo_binary() -> Result<PathBuf> {
         if trimmed.is_empty() {
             bail!("SERVO_BIN is set but empty");
         }
-        return Ok(PathBuf::from(trimmed));
+        return validate_servo_binary(PathBuf::from(trimmed), "SERVO_BIN");
     }
-    which::which("servo").map_err(|_| {
+
+    #[cfg(windows)]
+    if let Some(demo_path) = find_windows_servo_demo_binary() {
+        tracing::info!(
+            target: "pneuma_engines",
+            servo_bin = %demo_path.to_string_lossy(),
+            "using Servo Tech Demo binary from default install location"
+        );
+        return Ok(demo_path);
+    }
+
+    let candidate = which::which("servo").map_err(|_| {
         anyhow!(
-            "servo binary not found on PATH. Install Servo or set SERVO_BIN to the Servo executable."
+            "servo binary not found on PATH. Install Servo Tech Demo or set SERVO_BIN to the \
+Servo executable (for example: C:\\Program Files\\Servo\\Servo Tech Demo\\servo.exe)."
         )
-    })
+    })?;
+    validate_servo_binary(candidate, "PATH")
+}
+
+fn validate_servo_binary(path: PathBuf, source: &str) -> Result<PathBuf> {
+    if !path.is_file() {
+        bail!(
+            "{source} points to a non-file path: {}",
+            path.to_string_lossy()
+        );
+    }
+
+    let full = path.to_string_lossy().to_ascii_lowercase();
+    let file = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if file.contains("setup") || full.contains("servo-latest") {
+        bail!(
+            "{source} points to a Servo installer, not the browser binary: {}. \
+Use the demo executable instead (for example: C:\\Program Files\\Servo\\Servo Tech Demo\\servo.exe).",
+            path.to_string_lossy()
+        );
+    }
+
+    Ok(path)
+}
+
+#[cfg(windows)]
+fn find_windows_servo_demo_binary() -> Option<PathBuf> {
+    [
+        r"C:\Program Files\Servo\Servo Tech Demo\servo.exe",
+        r"C:\Program Files (x86)\Servo\Servo Tech Demo\servo.exe",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .find(|path| path.is_file())
 }
 
 fn allocate_local_port() -> Result<u16> {
@@ -795,26 +869,66 @@ Set SERVO_WEBDRIVER_URL to a valid endpoint or start Servo manually."
     Ok(())
 }
 
-async fn create_session(client: &reqwest::Client, base_url: &str) -> Result<String> {
+async fn create_session(
+    client: &reqwest::Client,
+    base_url: &str,
+    proxy_config: Option<&ProxyConfig>,
+) -> Result<String> {
     let session_url = format!("{base_url}/session");
-    let attempts = vec![
-        ("w3c-bare", json!({ "capabilities": {} })),
-        (
-            "w3c-full",
-            json!({
-                "capabilities": {
-                    "alwaysMatch": {},
-                    "firstMatch": [{}]
-                }
-            }),
-        ),
-        ("legacy", json!({ "desiredCapabilities": {} })),
-    ];
+    let attempts = if let Some(proxy) = proxy_config {
+        let proxy_capability = build_proxy_capabilities(proxy);
+        vec![
+            (
+                "w3c-proxy-bare",
+                json!({
+                    "capabilities": {
+                        "alwaysMatch": {
+                            "proxy": proxy_capability.clone()
+                        }
+                    }
+                }),
+            ),
+            (
+                "w3c-proxy-full",
+                json!({
+                    "capabilities": {
+                        "alwaysMatch": {
+                            "proxy": proxy_capability.clone()
+                        },
+                        "firstMatch": [{}]
+                    }
+                }),
+            ),
+            (
+                "legacy-proxy",
+                json!({
+                    "desiredCapabilities": {
+                        "proxy": proxy_capability
+                    }
+                }),
+            ),
+        ]
+    } else {
+        vec![
+            ("w3c-bare", json!({ "capabilities": {} })),
+            (
+                "w3c-full",
+                json!({
+                    "capabilities": {
+                        "alwaysMatch": {},
+                        "firstMatch": [{}]
+                    }
+                }),
+            ),
+            ("legacy", json!({ "desiredCapabilities": {} })),
+        ]
+    };
 
     let mut last_status = String::new();
     let mut last_error = String::new();
     let mut last_body = Value::Null;
     let mut session_already_started = false;
+    let mut proxy_capability_rejected = false;
 
     for (mode, payload) in attempts {
         let response = client
@@ -842,12 +956,14 @@ async fn create_session(client: &reqwest::Client, base_url: &str) -> Result<Stri
             return extract_session_id(&body);
         }
 
+        if proxy_config.is_some() && is_proxy_capability_rejection(&body) {
+            proxy_capability_rejected = true;
+        }
+
         if is_session_already_started(&body) {
             session_already_started = true;
-            if let Some(existing_session_id) = body
-                .get("sessionId")
-                .and_then(Value::as_str)
-                .or_else(|| {
+            if let Some(existing_session_id) =
+                body.get("sessionId").and_then(Value::as_str).or_else(|| {
                     body.get("value")
                         .and_then(|value| value.get("sessionId"))
                         .and_then(Value::as_str)
@@ -883,6 +999,22 @@ Restart the Servo process behind SERVO_WEBDRIVER_URL and retry."
         );
     }
 
+    if proxy_config.is_some() && proxy_capability_rejected {
+        tracing::warn!(
+            target: "pneuma_engines",
+            %last_status,
+            error = %last_error,
+            body = ?last_body,
+            "Servo WebDriver rejected proxy capabilities while transport stealth was requested"
+        );
+        bail!(
+            "Servo WebDriver rejected proxy capabilities while transport stealth was requested. \
+This Servo build may not support WebDriver proxy capabilities. \
+Try a different Servo build, disable transport-stealth, or use an engine path that supports launch-time proxying. \
+Last status: {last_status}, error: {last_error}, body: {last_body}"
+        );
+    }
+
     bail!(
         "Servo WebDriver session creation failed after all attempts. \
 Last status: {last_status}, error: {last_error}, body: {last_body}"
@@ -899,10 +1031,32 @@ fn is_session_already_started(body: &Value) -> bool {
                 .and_then(Value::as_str)
         })
         .unwrap_or_default();
-    message.to_ascii_lowercase().contains("session is already started")
+    message
+        .to_ascii_lowercase()
+        .contains("session is already started")
 }
 
-async fn find_existing_session_id(client: &reqwest::Client, base_url: &str) -> Result<Option<String>> {
+fn is_proxy_capability_rejection(body: &Value) -> bool {
+    let message = body
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            body.get("value")
+                .and_then(|value| value.get("message"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    message.contains("invalid capabilities")
+        || message.contains("missing field `capabilities`")
+        || (message.contains("proxy") && message.contains("capabil"))
+}
+
+async fn find_existing_session_id(
+    client: &reqwest::Client,
+    base_url: &str,
+) -> Result<Option<String>> {
     let sessions_url = format!("{base_url}/sessions");
     let response = match client.get(&sessions_url).send().await {
         Ok(response) => response,
@@ -1004,8 +1158,12 @@ fn format_wd_error(body: &Value) -> String {
         .and_then(|map| map.get("message"))
         .and_then(Value::as_str);
 
-    let error = nested_error.or(root_error).unwrap_or("unknown WebDriver error");
-    let message = nested_message.or(root_message).unwrap_or("no error message");
+    let error = nested_error
+        .or(root_error)
+        .unwrap_or("unknown WebDriver error");
+    let message = nested_message
+        .or(root_message)
+        .unwrap_or("no error message");
     format!("{error}: {message}")
 }
 

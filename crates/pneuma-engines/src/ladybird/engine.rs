@@ -2,12 +2,15 @@ use async_trait::async_trait;
 #[cfg(feature = "ladybird")]
 use anyhow::Context;
 
-use crate::{EngineKind, HeadlessEngine, MigrationEnvelope};
+#[cfg(feature = "ladybird")]
+use crate::ladybird::stealth::proxy_server_value;
+use crate::{EngineKind, HeadlessEngine, MigrationEnvelope, ProxyConfig};
 
 #[cfg(feature = "ladybird")]
 use pneuma_ladybird_shim::{
     evaluate as shim_evaluate,
     get_viewport as shim_get_viewport,
+    launch_with_proxy as shim_launch_with_proxy,
     navigate as shim_navigate,
     screenshot as shim_screenshot,
     set_viewport as shim_set_viewport,
@@ -27,10 +30,22 @@ impl std::fmt::Debug for LadybirdEngine {
 
 impl LadybirdEngine {
     #[cfg(feature = "ladybird")]
-    pub fn launch() -> anyhow::Result<Self> {
+    pub fn launch_with_proxy(proxy: Option<ProxyConfig>) -> anyhow::Result<Self> {
+        let proxy_server = proxy.as_ref().map(proxy_server_value);
         Ok(Self {
-            handle: pneuma_ladybird_shim::launch()?,
+            handle: shim_launch_with_proxy(proxy_server)?,
         })
+    }
+
+    #[cfg(not(feature = "ladybird"))]
+    pub fn launch_with_proxy(proxy: Option<ProxyConfig>) -> anyhow::Result<Self> {
+        let _ = proxy;
+        anyhow::bail!("LadybirdEngine requires the ladybird feature")
+    }
+
+    #[cfg(feature = "ladybird")]
+    pub fn launch() -> anyhow::Result<Self> {
+        Self::launch_with_proxy(None)
     }
 
     #[cfg(not(feature = "ladybird"))]

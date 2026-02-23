@@ -57,6 +57,8 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/sanity.cpp");
     println!("cargo:rerun-if-changed=src/bridge.cpp");
+    println!("cargo:rerun-if-changed=src/stealth.cpp");
+    println!("cargo:rerun-if-changed=src/stealth.h");
     println!("cargo:rerun-if-env-changed=LADYBIRD_BUILD_DIR");
 
     check_cmake_version(REQUIRED_CMAKE);
@@ -103,6 +105,7 @@ fn main() {
         .include(lagom_include.join("Libraries"))
         .include(lagom_include.join("Services"))
         .file(manifest_dir.join("src").join("sanity.cpp"))
+        .file(manifest_dir.join("src").join("stealth.cpp"))
         .file(manifest_dir.join("src").join("bridge.cpp"))
         .compile("pneuma_ladybird_sanity");
 

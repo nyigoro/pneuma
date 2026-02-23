@@ -1,8 +1,5 @@
 use anyhow::Result;
 use clap::Parser;
-#[cfg(feature = "ladybird")]
-use pneuma_engines::ladybird::LadybirdEngine;
-use pneuma_engines::servo::ServoEngine;
 
 mod cli;
 use cli::Args;
@@ -29,31 +26,51 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn spawn_broker_handle(engine: cli::EngineChoice) -> Result<pneuma_broker::handle::BrokerHandle> {
-    let runtime_engine: Box<dyn pneuma_engines::HeadlessEngine> = match engine {
-        cli::EngineChoice::Servo => Box::new(ServoEngine::launch().await?),
-        cli::EngineChoice::Ladybird => {
-            #[cfg(feature = "ladybird")]
-            {
-                Box::new(LadybirdEngine::launch()?)
-            }
-            #[cfg(not(feature = "ladybird"))]
-            {
-                anyhow::bail!("ladybird engine requires the `ladybird` feature")
-            }
-        }
+fn parse_initial_transport_profile() -> Result<Option<pneuma_engines::TransportStealthProfile>> {
+    let Ok(raw) = std::env::var("PNEUMA_INITIAL_TRANSPORT_PROFILE") else {
+        return Ok(None);
     };
+    let value = raw.trim().to_ascii_lowercase();
+    if value.is_empty() {
+        return Ok(None);
+    }
 
+    let profile = match value.as_str() {
+        "chrome120" | "chrome_120" | "chrome-120" | "chrome" => {
+            pneuma_engines::TransportStealthProfile::Chrome120
+        }
+        "safari17" | "safari_17" | "safari-17" | "safari" => {
+            pneuma_engines::TransportStealthProfile::Safari17
+        }
+        "firefox123" | "firefox_123" | "firefox-123" | "firefox" => {
+            pneuma_engines::TransportStealthProfile::Firefox123
+        }
+        _ => anyhow::bail!(
+            "unsupported PNEUMA_INITIAL_TRANSPORT_PROFILE value: {raw}. supported values: chrome120, safari17, firefox123"
+        ),
+    };
+    Ok(Some(profile))
+}
+
+async fn spawn_broker_handle(
+    engine: cli::EngineChoice,
+    stealth: bool,
+) -> Result<pneuma_broker::handle::BrokerHandle> {
+    let template = pneuma_broker::LaunchTemplate {
+        kind: engine.into(),
+        stealth,
+        initial_transport: parse_initial_transport_profile()?,
+    };
     let (broker_tx, broker_rx) = tokio::sync::mpsc::unbounded_channel();
     let handle = pneuma_broker::handle::BrokerHandle::new(broker_tx);
-    tokio::spawn(pneuma_broker::service::run(broker_rx, runtime_engine));
+    tokio::spawn(pneuma_broker::service::run_lazy(broker_rx, template));
     Ok(handle)
 }
 
 async fn run_script(script: std::path::PathBuf, engine: cli::EngineChoice, stealth: bool) -> Result<()> {
     let source = std::fs::read_to_string(&script)?;
 
-    let handle = spawn_broker_handle(engine).await?;
+    let handle = spawn_broker_handle(engine, stealth).await?;
     let runtime = pneuma_js::Runtime::new(handle)?;
     runtime.execute_script(&source)?;
 
@@ -71,7 +88,7 @@ async fn run_script(script: std::path::PathBuf, engine: cli::EngineChoice, steal
 
 async fn eval_expression(expr: String, engine: cli::EngineChoice) -> Result<()> {
     tracing::info!("evaluating expression");
-    let handle = spawn_broker_handle(engine).await?;
+    let handle = spawn_broker_handle(engine, false).await?;
     let runtime = pneuma_js::Runtime::new(handle)?;
     let rendered = runtime.eval_expression(&expr)?;
     println!("{rendered}");

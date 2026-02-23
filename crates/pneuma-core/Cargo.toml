@@ -13,6 +13,7 @@ path = "src/main.rs"
 [features]
 default = []
 ladybird = ["pneuma-engines/ladybird", "pneuma-broker/ladybird"]
+transport-stealth = ["pneuma-broker/transport-stealth"]
 
 [dependencies]
 anyhow.workspace = true

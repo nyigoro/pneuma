@@ -9,6 +9,7 @@ rust-version.workspace = true
 [features]
 default = []
 ladybird = ["pneuma-engines/ladybird"]
+transport-stealth = ["dep:pneuma-transport-stealth"]
 
 [dependencies]
 anyhow.workspace = true
@@ -19,3 +20,4 @@ tracing.workspace = true
 tokio.workspace = true
 async-trait = "0.1"
 pneuma-engines = { path = "../pneuma-engines" }
+pneuma-transport-stealth = { path = "../pneuma-transport-stealth", optional = true }
