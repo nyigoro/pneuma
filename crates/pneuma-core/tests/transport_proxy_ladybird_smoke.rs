@@ -3,8 +3,12 @@
 //! Ladybird transport proxy usage smoke test.
 //!
 //! Validates plumbing only: broker parses `transport_stealth`, resolves proxy,
-//! lazily launches Ladybird with proxy forwarding enabled, and Ladybird traffic
-//! reaches the configured proxy endpoint.
+//! and attempts a Ladybird transport-stealth launch path.
+//!
+//! Current upstream Ladybird RequestServer does not honor proxy settings yet,
+//! so broker intentionally falls back to Servo when `transport_stealth` is
+//! requested. This test therefore validates fail-secure proxy routing, not
+//! native Ladybird proxying.
 //!
 //! This test does not validate JA3 impersonation accuracy.
 //!
@@ -132,8 +136,10 @@ async fn transport_proxy_is_honored_by_lazy_ladybird_launch() -> Result<()> {
         let message = error.to_string();
         eprintln!("[transport-proxy-ladybird] navigate returned error: {message}");
         if message.contains("failed to launch primary Ladybird engine")
+            || message.contains("failed to launch primary Servo fallback engine")
             || message.contains("Application::initialize failed")
             || message.contains("pneuma_ladybird_browser_create returned null")
+            || message.contains("servo binary not found on PATH")
             || message.contains("cmake")
         {
             eprintln!(

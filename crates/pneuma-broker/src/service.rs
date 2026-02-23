@@ -6,7 +6,10 @@ use tokio::sync::mpsc;
 use crate::confidence::{ConfidenceScorer, ConfidenceSignals, EngineDecision};
 use crate::engine_factory::{DefaultEscalationEngineFactory, EscalationEngineFactory};
 use crate::handle::BrokerRequest;
-use pneuma_engines::HeadlessEngine;
+use crate::LaunchTemplate;
+use pneuma_engines::{EngineKind, HeadlessEngine, ProxyConfig};
+#[cfg(feature = "transport-stealth")]
+use pneuma_engines::{TransportProvider, TransportStealthProfile};
 
 /// Maximum time allowed for the full escalation handoff sequence:
 /// extract_state -> create secondary -> bootstrap navigate -> import_state -> final navigate.
@@ -32,21 +35,51 @@ impl std::fmt::Display for EngineRole {
 }
 
 struct BrokerState {
-    active_engine: Box<dyn HeadlessEngine>,
+    template: LaunchTemplate,
+    active_engine: Option<Box<dyn HeadlessEngine>>,
     active_role: EngineRole,
     standby_primary: Option<Box<dyn HeadlessEngine>>,
     consecutive_failures: u32,
     escalation_backoff_until: Option<Instant>,
+    #[cfg(feature = "transport-stealth")]
+    transport_profile: Option<TransportStealthProfile>,
+    transport_proxy: Option<ProxyConfig>,
 }
 
 impl BrokerState {
-    fn new(engine: Box<dyn HeadlessEngine>) -> Self {
+    fn with_engine(engine: Box<dyn HeadlessEngine>) -> Self {
+        let template = LaunchTemplate {
+            kind: engine.kind(),
+            stealth: false,
+            initial_transport: None,
+        };
         Self {
-            active_engine: engine,
+            template,
+            active_engine: Some(engine),
             active_role: EngineRole::Primary,
             standby_primary: None,
             consecutive_failures: 0,
             escalation_backoff_until: None,
+            #[cfg(feature = "transport-stealth")]
+            transport_profile: None,
+            transport_proxy: None,
+        }
+    }
+
+    fn with_template(template: LaunchTemplate) -> Self {
+        #[cfg(feature = "transport-stealth")]
+        let transport_profile = template.initial_transport.clone();
+
+        Self {
+            template,
+            active_engine: None,
+            active_role: EngineRole::Primary,
+            standby_primary: None,
+            consecutive_failures: 0,
+            escalation_backoff_until: None,
+            #[cfg(feature = "transport-stealth")]
+            transport_profile,
+            transport_proxy: None,
         }
     }
 
@@ -77,7 +110,10 @@ impl BrokerState {
     }
 
     fn apply_escalation(&mut self, secondary: Box<dyn HeadlessEngine>) {
-        let former = std::mem::replace(&mut self.active_engine, secondary);
+        let former = self
+            .active_engine
+            .replace(secondary)
+            .expect("active engine must exist before escalation");
         self.standby_primary = Some(former);
         self.active_role = EngineRole::SecondaryProxy;
         self.consecutive_failures = 0;
@@ -86,7 +122,7 @@ impl BrokerState {
     /// Returns the failed secondary for best-effort close by caller.
     fn apply_rollback(&mut self) -> Option<Box<dyn HeadlessEngine>> {
         let primary = self.standby_primary.take()?;
-        let failed = std::mem::replace(&mut self.active_engine, primary);
+        let failed = self.active_engine.replace(primary)?;
         self.active_role = EngineRole::Primary;
         self.consecutive_failures = 0;
         self.escalation_backoff_until = Some(Instant::now() + ESCALATION_BACKOFF_AFTER_ROLLBACK);
@@ -98,12 +134,142 @@ impl BrokerState {
     /// Returns `None` if no standby is present.
     fn apply_score_recovery(&mut self) -> Option<Box<dyn HeadlessEngine>> {
         let primary = self.standby_primary.take()?;
-        let old_secondary = std::mem::replace(&mut self.active_engine, primary);
+        let old_secondary = self.active_engine.replace(primary)?;
         self.active_role = EngineRole::Primary;
         self.consecutive_failures = 0;
         // No backoff: this is a healthy transition, not a failure rollback.
         Some(old_secondary)
     }
+}
+
+#[cfg(feature = "transport-stealth")]
+fn parse_transport_profile(opts_json: &str) -> Option<TransportStealthProfile> {
+    let parsed: Value = serde_json::from_str(opts_json).ok()?;
+    let raw_profile = parsed.get("transport_stealth")?.clone();
+    serde_json::from_value(raw_profile).ok()
+}
+
+#[cfg(feature = "transport-stealth")]
+fn maybe_update_transport_proxy<P: TransportProvider>(
+    state: &mut BrokerState,
+    opts_json: &str,
+    provider: &P,
+    page_id: u32,
+) {
+    let requested = parse_transport_profile(opts_json);
+    match (&state.transport_profile, requested) {
+        (None, Some(profile)) => {
+            state.transport_proxy = provider.proxy_for_profile(&profile);
+            state.transport_profile = Some(profile.clone());
+            tracing::info!(
+                target: "pneuma_broker",
+                page_id,
+                profile = ?profile,
+                has_proxy = state.transport_proxy.is_some(),
+                "transport profile initialized for current broker session"
+            );
+        }
+        (Some(current), Some(requested)) if current != &requested => {
+            tracing::warn!(
+                target: "pneuma_broker",
+                page_id,
+                current_profile = ?current,
+                requested_profile = ?requested,
+                "ignoring transport profile rotation for active session"
+            );
+        }
+        _ => {}
+    }
+}
+
+async fn launch_primary_engine(
+    template: &LaunchTemplate,
+    transport_proxy: Option<ProxyConfig>,
+) -> anyhow::Result<Box<dyn HeadlessEngine>> {
+    match template.kind {
+        EngineKind::Servo => {
+            let engine = pneuma_engines::servo::ServoEngine::launch_with_proxy(transport_proxy)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to launch primary Servo engine: {e}"))?;
+            Ok(Box::new(engine))
+        }
+        EngineKind::Ladybird => {
+            if transport_proxy.is_some() {
+                tracing::warn!(
+                    target: "pneuma_broker",
+                    "this Ladybird build does not honor transport proxy in RequestServer yet; using Servo fail-secure fallback for primary engine"
+                );
+                let engine =
+                    pneuma_engines::servo::ServoEngine::launch_with_proxy(transport_proxy)
+                        .await
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "failed to launch primary Servo fallback engine with transport proxy: {e}"
+                            )
+                        })?;
+                return Ok(Box::new(engine));
+            }
+
+            #[cfg(feature = "ladybird")]
+            {
+                let engine = pneuma_engines::ladybird::LadybirdEngine::launch_with_proxy(None)
+                    .map_err(|e| anyhow::anyhow!("failed to launch primary Ladybird engine: {e}"))?;
+                Ok(Box::new(engine))
+            }
+            #[cfg(not(feature = "ladybird"))]
+            {
+                anyhow::bail!("ladybird engine requires the `ladybird` feature")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "transport-stealth")]
+async fn ensure_active_engine<P: TransportProvider>(
+    state: &mut BrokerState,
+    provider: &P,
+) -> anyhow::Result<()> {
+    if state.active_engine.is_some() {
+        return Ok(());
+    }
+
+    if state.transport_proxy.is_none() {
+        if let Some(profile) = state.transport_profile.as_ref() {
+            state.transport_proxy = provider.proxy_for_profile(profile);
+            tracing::info!(
+                target: "pneuma_broker",
+                profile = ?profile,
+                has_proxy = state.transport_proxy.is_some(),
+                "resolved transport proxy for lazy primary engine launch"
+            );
+        }
+    }
+
+    let engine = launch_primary_engine(&state.template, state.transport_proxy.clone()).await?;
+    tracing::info!(
+        target: "pneuma_broker",
+        engine = engine.name(),
+        has_transport_proxy = state.transport_proxy.is_some(),
+        "lazy primary engine launched"
+    );
+    state.active_engine = Some(engine);
+    Ok(())
+}
+
+#[cfg(not(feature = "transport-stealth"))]
+async fn ensure_active_engine(state: &mut BrokerState) -> anyhow::Result<()> {
+    if state.active_engine.is_some() {
+        return Ok(());
+    }
+
+    let engine = launch_primary_engine(&state.template, None).await?;
+    tracing::info!(
+        target: "pneuma_broker",
+        engine = engine.name(),
+        "lazy primary engine launched"
+    );
+    state.active_engine = Some(engine);
+    Ok(())
 }
 
 struct HandoffResult {
@@ -268,24 +434,52 @@ async fn attempt_score_recovery(
     }
 }
 
-/// Entry point used by `main.rs`. Wraps `run_with_factory` with the default factory.
+/// Entry point used by `main.rs` in eager mode. Wraps `run_with_factory` with
+/// the default factory.
 pub async fn run(rx: mpsc::UnboundedReceiver<BrokerRequest>, engine: Box<dyn HeadlessEngine>) {
     run_with_factory(rx, engine, DefaultEscalationEngineFactory).await
 }
 
-/// Testable entry point that accepts an injected factory.
+/// Entry point used by `main.rs` in lazy mode.
+pub async fn run_lazy(rx: mpsc::UnboundedReceiver<BrokerRequest>, template: LaunchTemplate) {
+    run_with_factory_lazy(rx, template, DefaultEscalationEngineFactory).await
+}
+
+/// Testable eager entry point that accepts an injected factory.
 pub async fn run_with_factory<F>(
-    mut rx: mpsc::UnboundedReceiver<BrokerRequest>,
+    rx: mpsc::UnboundedReceiver<BrokerRequest>,
     engine: Box<dyn HeadlessEngine>,
+    factory: F,
+) where
+    F: EscalationEngineFactory + 'static,
+{
+    run_loop(rx, BrokerState::with_engine(engine), factory).await
+}
+
+/// Testable lazy entry point that accepts an injected factory.
+pub async fn run_with_factory_lazy<F>(
+    rx: mpsc::UnboundedReceiver<BrokerRequest>,
+    template: LaunchTemplate,
+    factory: F,
+) where
+    F: EscalationEngineFactory + 'static,
+{
+    run_loop(rx, BrokerState::with_template(template), factory).await
+}
+
+async fn run_loop<F>(
+    mut rx: mpsc::UnboundedReceiver<BrokerRequest>,
+    mut state: BrokerState,
     factory: F,
 ) where
     F: EscalationEngineFactory + 'static,
 {
     tracing::info!(target: "pneuma_broker", "service loop started");
     let scorer = ConfidenceScorer::new();
+    #[cfg(feature = "transport-stealth")]
+    let transport_provider = pneuma_transport_stealth::LocalProxyTransportProvider::new();
     let mut next_page_id: u32 = 1;
-    let mut engine_closed = false;
-    let mut state = BrokerState::new(engine);
+    let mut engine_closed = state.active_engine.is_none();
 
     while let Some(req) = rx.recv().await {
         match req {
@@ -310,7 +504,32 @@ pub async fn run_with_factory<F>(
                     "Navigate"
                 );
 
-                let result = state.active_engine.navigate(&url, &opts_json).await;
+                #[cfg(feature = "transport-stealth")]
+                {
+                    maybe_update_transport_proxy(
+                        &mut state,
+                        &opts_json,
+                        &transport_provider,
+                        page_id,
+                    );
+                    if let Err(error) = ensure_active_engine(&mut state, &transport_provider).await
+                    {
+                        let _ = reply.send(Err(error));
+                        continue;
+                    }
+                }
+                #[cfg(not(feature = "transport-stealth"))]
+                {
+                    if let Err(error) = ensure_active_engine(&mut state).await {
+                        let _ = reply.send(Err(error));
+                        continue;
+                    }
+                }
+
+                let result = match state.active_engine.as_ref() {
+                    Some(engine) => engine.navigate(&url, &opts_json).await,
+                    None => Err(anyhow::anyhow!("active engine unavailable after lazy launch")),
+                };
                 handle_operation_health(&mut state, page_id, "navigate", &result).await;
 
                 // Stamp secondary-served responses before scoring or reply.
@@ -384,6 +603,16 @@ pub async fn run_with_factory<F>(
                     continue;
                 }
 
+                let Some(primary_engine) = state.active_engine.as_ref() else {
+                    tracing::warn!(
+                        target: "pneuma_broker",
+                        page_id,
+                        "escalation requested but active engine was unavailable"
+                    );
+                    let _ = reply.send(result);
+                    continue;
+                };
+
                 // Escalation path: one-shot, bounded, fallback on any failure.
                 tracing::warn!(
                     target: "pneuma_broker",
@@ -396,7 +625,13 @@ pub async fn run_with_factory<F>(
 
                 let handoff_outcome = tokio::time::timeout(
                     ESCALATION_TIMEOUT,
-                    perform_handoff(&*state.active_engine, &factory, &url, &opts_json),
+                    perform_handoff(
+                        primary_engine.as_ref(),
+                        &factory,
+                        &url,
+                        &opts_json,
+                        state.transport_proxy.clone(),
+                    ),
                 )
                 .await;
 
@@ -468,14 +703,40 @@ pub async fn run_with_factory<F>(
                     script_len = script.len(),
                     "Evaluate"
                 );
-                let result = state.active_engine.evaluate(&script).await;
+                #[cfg(feature = "transport-stealth")]
+                let ensure_result = ensure_active_engine(&mut state, &transport_provider).await;
+                #[cfg(not(feature = "transport-stealth"))]
+                let ensure_result = ensure_active_engine(&mut state).await;
+
+                if let Err(error) = ensure_result {
+                    let _ = reply.send(Err(error));
+                    continue;
+                }
+
+                let result = match state.active_engine.as_ref() {
+                    Some(engine) => engine.evaluate(&script).await,
+                    None => Err(anyhow::anyhow!("active engine unavailable after lazy launch")),
+                };
                 handle_operation_health(&mut state, page_id, "evaluate", &result).await;
                 let _ = reply.send(result);
             }
 
             BrokerRequest::Screenshot { page_id, reply } => {
                 tracing::info!(target: "pneuma_broker", page_id, "Screenshot");
-                let result = state.active_engine.screenshot().await;
+                #[cfg(feature = "transport-stealth")]
+                let ensure_result = ensure_active_engine(&mut state, &transport_provider).await;
+                #[cfg(not(feature = "transport-stealth"))]
+                let ensure_result = ensure_active_engine(&mut state).await;
+
+                if let Err(error) = ensure_result {
+                    let _ = reply.send(Err(error));
+                    continue;
+                }
+
+                let result = match state.active_engine.as_ref() {
+                    Some(engine) => engine.screenshot().await,
+                    None => Err(anyhow::anyhow!("active engine unavailable after lazy launch")),
+                };
                 handle_operation_health(&mut state, page_id, "screenshot", &result).await;
                 let _ = reply.send(result);
             }
@@ -494,7 +755,20 @@ pub async fn run_with_factory<F>(
                     active_role = %state.active_role,
                     "SetViewport"
                 );
-                let result = state.active_engine.set_viewport(width, height).await;
+                #[cfg(feature = "transport-stealth")]
+                let ensure_result = ensure_active_engine(&mut state, &transport_provider).await;
+                #[cfg(not(feature = "transport-stealth"))]
+                let ensure_result = ensure_active_engine(&mut state).await;
+
+                if let Err(error) = ensure_result {
+                    let _ = reply.send(Err(error));
+                    continue;
+                }
+
+                let result = match state.active_engine.as_ref() {
+                    Some(engine) => engine.set_viewport(width, height).await,
+                    None => Err(anyhow::anyhow!("active engine unavailable after lazy launch")),
+                };
                 handle_operation_health(&mut state, page_id, "set_viewport", &result).await;
                 let _ = reply.send(result);
             }
@@ -506,16 +780,33 @@ pub async fn run_with_factory<F>(
                     active_role = %state.active_role,
                     "GetViewport"
                 );
-                let result = state.active_engine.get_viewport().await;
+                #[cfg(feature = "transport-stealth")]
+                let ensure_result = ensure_active_engine(&mut state, &transport_provider).await;
+                #[cfg(not(feature = "transport-stealth"))]
+                let ensure_result = ensure_active_engine(&mut state).await;
+
+                if let Err(error) = ensure_result {
+                    let _ = reply.send(Err(error));
+                    continue;
+                }
+
+                let result = match state.active_engine.as_ref() {
+                    Some(engine) => engine.get_viewport().await,
+                    None => Err(anyhow::anyhow!("active engine unavailable after lazy launch")),
+                };
                 handle_operation_health(&mut state, page_id, "get_viewport", &result).await;
                 let _ = reply.send(result);
             }
 
             BrokerRequest::CloseBrowser { reply } => {
                 tracing::info!(target: "pneuma_broker", "CloseBrowser");
-                let result = state.active_engine.close().await;
+                let result = match state.active_engine.as_ref() {
+                    Some(engine) => engine.close().await,
+                    None => Ok(()),
+                };
                 if result.is_ok() {
                     engine_closed = true;
+                    state.active_engine = None;
                 }
                 close_standby_primary(&mut state).await;
                 let _ = reply.send(result);
@@ -523,9 +814,13 @@ pub async fn run_with_factory<F>(
 
             BrokerRequest::Shutdown { reply } => {
                 tracing::info!(target: "pneuma_broker", "Shutdown - exiting service loop");
-                let result = state.active_engine.close().await;
+                let result = match state.active_engine.as_ref() {
+                    Some(engine) => engine.close().await,
+                    None => Ok(()),
+                };
                 if result.is_ok() {
                     engine_closed = true;
+                    state.active_engine = None;
                 }
                 close_standby_primary(&mut state).await;
                 let _ = reply.send(result);
@@ -535,12 +830,14 @@ pub async fn run_with_factory<F>(
     }
 
     if !engine_closed {
-        if let Err(error) = state.active_engine.close().await {
-            tracing::warn!(
-                target: "pneuma_broker",
-                error = %error,
-                "engine close during service shutdown failed"
-            );
+        if let Some(engine) = state.active_engine.as_ref() {
+            if let Err(error) = engine.close().await {
+                tracing::warn!(
+                    target: "pneuma_broker",
+                    error = %error,
+                    "engine close during service shutdown failed"
+                );
+            }
         }
     }
     close_standby_primary(&mut state).await;
@@ -563,6 +860,7 @@ async fn perform_handoff<F>(
     factory: &F,
     url: &str,
     opts_json: &str,
+    transport_proxy: Option<ProxyConfig>,
 ) -> anyhow::Result<HandoffResult>
 where
     F: EscalationEngineFactory,
@@ -586,9 +884,12 @@ where
 
     // Step 2: create secondary engine.
     let secondary = factory
-        .create_for_escalation(pneuma_engines::EngineKind::Ladybird)
+        .create_for_escalation_with_transport(
+            pneuma_engines::EngineKind::Ladybird,
+            transport_proxy.clone(),
+        )
         .await
-        .map_err(|e| anyhow::anyhow!("factory.create_for_escalation failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("factory.create_for_escalation_with_transport failed: {e}"))?;
 
     tracing::info!(
         target: "pneuma_broker",
@@ -865,7 +1166,7 @@ mod tests {
     #[test]
     fn backoff_active_suppresses_escalation() {
         let engine = Box::new(FakeEngine::happy("primary", "title"));
-        let mut state = BrokerState::new(engine);
+        let mut state = BrokerState::with_engine(engine);
         state.escalation_backoff_until = Some(Instant::now() + Duration::from_secs(60));
         assert_eq!(state.escalation_skip_reason(), Some("in_backoff_window"));
     }
@@ -873,7 +1174,7 @@ mod tests {
     #[test]
     fn backoff_expired_allows_escalation() {
         let engine = Box::new(FakeEngine::happy("primary", "title"));
-        let mut state = BrokerState::new(engine);
+        let mut state = BrokerState::with_engine(engine);
         state.escalation_backoff_until = Some(Instant::now() - Duration::from_secs(1));
         assert_eq!(state.escalation_skip_reason(), None);
     }
@@ -881,7 +1182,7 @@ mod tests {
     #[test]
     fn record_failure_reaches_budget() {
         let engine = Box::new(FakeEngine::happy("primary", "title"));
-        let mut state = BrokerState::new(engine);
+        let mut state = BrokerState::with_engine(engine);
         state.active_role = EngineRole::SecondaryProxy;
         assert!(!state.record_failure());
         assert!(!state.record_failure());
@@ -891,7 +1192,7 @@ mod tests {
     #[test]
     fn record_success_resets_counter() {
         let engine = Box::new(FakeEngine::happy("primary", "title"));
-        let mut state = BrokerState::new(engine);
+        let mut state = BrokerState::with_engine(engine);
         state.record_failure();
         state.record_failure();
         state.record_success();
@@ -973,7 +1274,8 @@ mod tests {
             Ok((1280, 720))
         }
         async fn close(&self) -> Result<()> {
-            self.closed.store(true, std::sync::atomic::Ordering::Release);
+            self.closed
+                .store(true, std::sync::atomic::Ordering::Release);
             Ok(())
         }
         async fn extract_state(&self) -> Result<MigrationEnvelope> {
@@ -1001,7 +1303,7 @@ mod tests {
             "test setup must produce a healthy score"
         );
 
-        let mut state = BrokerState::new(Box::new(active));
+        let mut state = BrokerState::with_engine(Box::new(active));
         state.active_role = EngineRole::SecondaryProxy;
         state.standby_primary = Some(Box::new(MetaEngine::healthy("standby_primary")));
 
@@ -1022,7 +1324,7 @@ mod tests {
     #[tokio::test]
     async fn score_recovery_not_attempted_below_threshold() {
         let scorer = ConfidenceScorer::new();
-        let mut state = BrokerState::new(Box::new(MetaEngine::healthy("secondary")));
+        let mut state = BrokerState::with_engine(Box::new(MetaEngine::healthy("secondary")));
         state.active_role = EngineRole::SecondaryProxy;
         state.standby_primary = Some(Box::new(MetaEngine::healthy("standby")));
 
@@ -1079,7 +1381,7 @@ mod tests {
         }
 
         let scorer = ConfidenceScorer::new();
-        let mut state = BrokerState::new(Box::new(MetaEngine::healthy("secondary")));
+        let mut state = BrokerState::with_engine(Box::new(MetaEngine::healthy("secondary")));
         state.active_role = EngineRole::SecondaryProxy;
         state.standby_primary = Some(Box::new(FailingStandby));
 
@@ -1101,7 +1403,7 @@ mod tests {
     #[tokio::test]
     async fn score_recovery_probe_low_score_stays_on_secondary() {
         let scorer = ConfidenceScorer::new();
-        let mut state = BrokerState::new(Box::new(MetaEngine::healthy("secondary")));
+        let mut state = BrokerState::with_engine(Box::new(MetaEngine::healthy("secondary")));
         state.active_role = EngineRole::SecondaryProxy;
         state.standby_primary = Some(Box::new(MetaEngine::unhealthy("weak_standby")));
 
@@ -1190,7 +1492,8 @@ mod tests {
             Ok((1280, 720))
         }
         async fn close(&self) -> Result<()> {
-            self.closed.store(true, std::sync::atomic::Ordering::Release);
+            self.closed
+                .store(true, std::sync::atomic::Ordering::Release);
             Ok(())
         }
         async fn extract_state(&self) -> Result<MigrationEnvelope> {
@@ -1221,9 +1524,17 @@ mod tests {
 
     #[async_trait]
     impl EscalationEngineFactory for FakeFactory {
-        async fn create_for_escalation(&self, _target: EngineKind) -> Result<Box<dyn HeadlessEngine>> {
-            let mut guard = self.engine.lock().map_err(|_| anyhow::anyhow!("factory lock poisoned"))?;
-            guard.take().ok_or_else(|| anyhow::anyhow!("factory already consumed"))
+        async fn create_for_escalation(
+            &self,
+            _target: EngineKind,
+        ) -> Result<Box<dyn HeadlessEngine>> {
+            let mut guard = self
+                .engine
+                .lock()
+                .map_err(|_| anyhow::anyhow!("factory lock poisoned"))?;
+            guard
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("factory already consumed"))
         }
     }
 
@@ -1231,7 +1542,10 @@ mod tests {
 
     #[async_trait]
     impl EscalationEngineFactory for FailingFactory {
-        async fn create_for_escalation(&self, _target: EngineKind) -> Result<Box<dyn HeadlessEngine>> {
+        async fn create_for_escalation(
+            &self,
+            _target: EngineKind,
+        ) -> Result<Box<dyn HeadlessEngine>> {
             Err(anyhow::anyhow!("factory failed"))
         }
     }
@@ -1247,6 +1561,7 @@ mod tests {
             &factory,
             "https://example.com/",
             "{}",
+            None,
         )
         .await;
 
@@ -1272,6 +1587,7 @@ mod tests {
             &FailingFactory,
             "https://example.com/",
             "{}",
+            None,
         )
         .await;
         match result {
@@ -1290,6 +1606,7 @@ mod tests {
             &factory,
             "https://example.com/",
             "{}",
+            None,
         )
         .await;
         assert!(result.is_err());
@@ -1339,6 +1656,7 @@ mod tests {
             &factory,
             "https://example.com/",
             "{}",
+            None,
         )
         .await;
         match result {
@@ -1393,7 +1711,11 @@ mod tests {
         }
 
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(super::run_with_factory(rx, Box::new(SlowEngine), FailingFactory));
+        tokio::spawn(super::run_with_factory(
+            rx,
+            Box::new(SlowEngine),
+            FailingFactory,
+        ));
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         let send_ok = tx.send(crate::handle::BrokerRequest::Navigate {
             page_id: 1,
@@ -1404,6 +1726,9 @@ mod tests {
         assert!(send_ok.is_ok());
 
         let reply = reply_rx.await.expect("must receive navigate reply");
-        assert!(reply.is_ok(), "expected fallback primary result on timeout/failure");
+        assert!(
+            reply.is_ok(),
+            "expected fallback primary result on timeout/failure"
+        );
     }
 }
