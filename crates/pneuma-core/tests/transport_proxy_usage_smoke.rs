@@ -101,7 +101,7 @@ async fn transport_proxy_is_honored_by_lazy_servo_launch() -> Result<()> {
     });
 
     let _proxy_guard = EnvVarGuard::set(
-        "PNEUMA_TRANSPORT_PROXY_CHROME120",
+        "PNEUMA_TRANSPORT_PROXY_CHROME_120",
         format!("http://{proxy_addr}"),
     );
     let _no_proxy_guard = EnvVarGuard::unset("PNEUMA_TRANSPORT_NO_PROXY");
@@ -128,7 +128,7 @@ async fn transport_proxy_is_honored_by_lazy_servo_launch() -> Result<()> {
         handle_for_nav.navigate(
             page_id,
             "http://example.com/transport-proxy-smoke".to_string(),
-            r#"{"transport_stealth":{"type":"chrome120"}}"#.to_string(),
+            r#"{"transport_stealth":{"type":"chrome","version":120}}"#.to_string(),
         )?;
         Ok(())
     });

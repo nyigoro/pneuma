@@ -30,26 +30,24 @@ fn parse_initial_transport_profile() -> Result<Option<pneuma_engines::TransportS
     let Ok(raw) = std::env::var("PNEUMA_INITIAL_TRANSPORT_PROFILE") else {
         return Ok(None);
     };
-    let value = raw.trim().to_ascii_lowercase();
+    let value = raw.trim();
     if value.is_empty() {
         return Ok(None);
     }
 
-    let profile = match value.as_str() {
-        "chrome120" | "chrome_120" | "chrome-120" | "chrome" => {
-            pneuma_engines::TransportStealthProfile::Chrome120
-        }
-        "safari17" | "safari_17" | "safari-17" | "safari" => {
-            pneuma_engines::TransportStealthProfile::Safari17
-        }
-        "firefox123" | "firefox_123" | "firefox-123" | "firefox" => {
-            pneuma_engines::TransportStealthProfile::Firefox123
-        }
-        _ => anyhow::bail!(
-            "unsupported PNEUMA_INITIAL_TRANSPORT_PROFILE value: {raw}. supported values: chrome120, safari17, firefox123"
-        ),
-    };
-    Ok(Some(profile))
+    if let Some(profile) = pneuma_engines::TransportStealthProfile::parse_flexible(value) {
+        return Ok(Some(profile));
+    }
+
+    if let Ok(profile) = serde_json::from_str::<pneuma_engines::TransportStealthProfile>(value) {
+        return Ok(Some(profile));
+    }
+
+    anyhow::bail!(
+        "unsupported PNEUMA_INITIAL_TRANSPORT_PROFILE value: {raw}. \
+supported examples: chrome120, firefox123, safari17, edge120, \
+or JSON like {{\"type\":\"chrome\",\"version\":120}}"
+    )
 }
 
 async fn spawn_broker_handle(

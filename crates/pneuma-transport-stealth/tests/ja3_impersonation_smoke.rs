@@ -36,44 +36,77 @@ impl Drop for EnvVarGuard {
     }
 }
 
+struct ProfileCase {
+    profile: TransportStealthProfile,
+    proxy_env: &'static str,
+    expected_env: &'static str,
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_proxy_endpoint_emits_parseable_ja3_clienthello() -> Result<()> {
+async fn test_proxy_endpoint_emits_parseable_ja3_for_multiple_profiles() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let (echo_addr, ja3_rx, echo_task) = spawn_ja3_echo_server().await?;
-    let (proxy_addr, proxy_task) = spawn_connect_proxy(echo_addr).await?;
+    let cases = vec![
+        ProfileCase {
+            profile: TransportStealthProfile::Chrome(120),
+            proxy_env: "PNEUMA_TRANSPORT_PROXY_CHROME_120",
+            expected_env: "PNEUMA_EXPECTED_JA3_CHROME_120",
+        },
+        ProfileCase {
+            profile: TransportStealthProfile::Firefox(123),
+            proxy_env: "PNEUMA_TRANSPORT_PROXY_FIREFOX_123",
+            expected_env: "PNEUMA_EXPECTED_JA3_FIREFOX_123",
+        },
+        ProfileCase {
+            profile: TransportStealthProfile::Safari(17),
+            proxy_env: "PNEUMA_TRANSPORT_PROXY_SAFARI_17",
+            expected_env: "PNEUMA_EXPECTED_JA3_SAFARI_17",
+        },
+        ProfileCase {
+            profile: TransportStealthProfile::Edge(120),
+            proxy_env: "PNEUMA_TRANSPORT_PROXY_EDGE_120",
+            expected_env: "PNEUMA_EXPECTED_JA3_EDGE_120",
+        },
+    ];
 
-    let _proxy_guard = EnvVarGuard::set(
-        "PNEUMA_TRANSPORT_PROXY_CHROME120",
-        format!("http://{proxy_addr}"),
-    );
+    for case in cases {
+        let (echo_addr, ja3_rx, echo_task) = spawn_ja3_echo_server().await?;
+        let (proxy_addr, proxy_task) = spawn_connect_proxy(echo_addr).await?;
+        let _proxy_guard = EnvVarGuard::set(case.proxy_env, format!("http://{proxy_addr}"));
 
-    let provider = LocalProxyTransportProvider::new();
-    let proxy_cfg = provider
-        .proxy_for_profile(&TransportStealthProfile::Chrome120)
-        .context("provider should return proxy config for Chrome120")?;
+        let provider = LocalProxyTransportProvider::new();
+        let proxy_cfg = provider
+            .proxy_for_profile(&case.profile)
+            .with_context(|| format!("provider should return proxy config for {:?}", case.profile))?;
 
-    open_tls_via_proxy(&proxy_cfg.http_proxy, echo_addr).await?;
+        open_tls_via_proxy(&proxy_cfg.http_proxy, echo_addr).await?;
 
-    let ja3 = tokio::time::timeout(Duration::from_secs(5), ja3_rx)
-        .await
-        .context("timed out waiting for JA3 capture from echo server")?
-        .context("JA3 echo server dropped capture channel")?;
+        let ja3 = tokio::time::timeout(Duration::from_secs(5), ja3_rx)
+            .await
+            .context("timed out waiting for JA3 capture from echo server")?
+            .context("JA3 echo server dropped capture channel")?;
 
-    assert!(
-        !ja3.is_empty(),
-        "captured JA3 string should not be empty when TLS client hello is observed"
-    );
-
-    if let Ok(expected_ja3) = std::env::var("PNEUMA_EXPECTED_JA3_CHROME120") {
-        assert_eq!(
-            ja3, expected_ja3,
-            "captured JA3 does not match expected value from PNEUMA_EXPECTED_JA3_CHROME120"
+        assert!(
+            !ja3.is_empty(),
+            "captured JA3 string should not be empty when TLS client hello is observed for {:?}",
+            case.profile
         );
+
+        if let Ok(expected_ja3) = std::env::var(case.expected_env) {
+            let expected_ja3 = expected_ja3.trim();
+            if !expected_ja3.is_empty() {
+                assert_eq!(
+                    ja3, expected_ja3,
+                    "captured JA3 does not match expected value from {} for {:?}",
+                    case.expected_env, case.profile
+                );
+            }
+        }
+
+        proxy_task.abort();
+        echo_task.abort();
     }
 
-    proxy_task.abort();
-    echo_task.abort();
     Ok(())
 }
 

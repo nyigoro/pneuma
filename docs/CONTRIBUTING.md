@@ -110,3 +110,44 @@ LADYBIRD_BUILD_DIR=/path/to/ladybird/Build/debug-clang20 \
 cargo test -p pneuma-core --test transport_proxy_ladybird_smoke \
   --features "ladybird transport-stealth" -- --ignored --nocapture
 ```
+
+Note:
+- Current upstream Ladybird `RequestServer` does not honor proxy settings yet.
+- Broker intentionally uses Servo fail-secure fallback when `transport_stealth`
+  is requested for a Ladybird target.
+
+## Transport Stealth Profile Configuration
+
+Versioned transport profiles resolve proxy endpoints from environment
+variables in this order:
+
+1. Version-specific:
+   - `PNEUMA_TRANSPORT_PROXY_CHROME_<version>`
+   - `PNEUMA_TRANSPORT_PROXY_FIREFOX_<version>`
+   - `PNEUMA_TRANSPORT_PROXY_SAFARI_<version>`
+   - `PNEUMA_TRANSPORT_PROXY_EDGE_<version>`
+2. Generic browser fallback:
+   - `PNEUMA_TRANSPORT_PROXY_CHROME`
+   - `PNEUMA_TRANSPORT_PROXY_FIREFOX`
+   - `PNEUMA_TRANSPORT_PROXY_SAFARI`
+   - `PNEUMA_TRANSPORT_PROXY_EDGE`
+3. Global fallback:
+   - `PNEUMA_TRANSPORT_PROXY_URL`
+
+Legacy aliases (`...CHROME120`, `...FIREFOX123`, `...SAFARI17`) are still
+accepted for compatibility.
+
+### JA3 Smoke (Proxy Layer)
+
+The transport crate includes a JA3 capture smoke test that validates profile
+resolution and tunneled TLS ClientHello extraction:
+
+```bash
+cargo test -p pneuma-transport-stealth --test ja3_impersonation_smoke -- --nocapture
+```
+
+Optional expected hashes:
+- `PNEUMA_EXPECTED_JA3_CHROME_120`
+- `PNEUMA_EXPECTED_JA3_FIREFOX_123`
+- `PNEUMA_EXPECTED_JA3_SAFARI_17`
+- `PNEUMA_EXPECTED_JA3_EDGE_120`

@@ -57,15 +57,50 @@ impl TransportProvider for LocalProxyTransportProvider {
 }
 
 fn resolve_endpoint_from_env(profile: &TransportStealthProfile) -> Option<String> {
-    let key = match profile {
-        TransportStealthProfile::Chrome120 => Some("PNEUMA_TRANSPORT_PROXY_CHROME120"),
-        TransportStealthProfile::Safari17 => Some("PNEUMA_TRANSPORT_PROXY_SAFARI17"),
-        TransportStealthProfile::Firefox123 => Some("PNEUMA_TRANSPORT_PROXY_FIREFOX123"),
-        TransportStealthProfile::Custom { .. } => Some("PNEUMA_TRANSPORT_PROXY_CUSTOM"),
-    };
+    let profile_keys = profile_env_keys(profile);
+    for key in profile_keys {
+        if let Some(value) = read_nonempty_env(&key) {
+            return Some(value);
+        }
+    }
 
-    key.and_then(|k| std::env::var(k).ok())
-        .or_else(|| std::env::var("PNEUMA_TRANSPORT_PROXY_URL").ok())
+    read_nonempty_env("PNEUMA_TRANSPORT_PROXY_URL")
+}
+
+fn profile_env_keys(profile: &TransportStealthProfile) -> Vec<String> {
+    match profile {
+        TransportStealthProfile::Chrome(version) => vec![
+            format!("PNEUMA_TRANSPORT_PROXY_CHROME_{version}"),
+            format!("PNEUMA_TRANSPORT_PROXY_CHROME{version}"), // legacy
+            "PNEUMA_TRANSPORT_PROXY_CHROME".to_string(),
+        ],
+        TransportStealthProfile::Firefox(version) => vec![
+            format!("PNEUMA_TRANSPORT_PROXY_FIREFOX_{version}"),
+            format!("PNEUMA_TRANSPORT_PROXY_FIREFOX{version}"), // legacy
+            "PNEUMA_TRANSPORT_PROXY_FIREFOX".to_string(),
+        ],
+        TransportStealthProfile::Safari(version) => vec![
+            format!("PNEUMA_TRANSPORT_PROXY_SAFARI_{version}"),
+            format!("PNEUMA_TRANSPORT_PROXY_SAFARI{version}"), // legacy
+            "PNEUMA_TRANSPORT_PROXY_SAFARI".to_string(),
+        ],
+        TransportStealthProfile::Edge(version) => vec![
+            format!("PNEUMA_TRANSPORT_PROXY_EDGE_{version}"),
+            format!("PNEUMA_TRANSPORT_PROXY_EDGE{version}"), // legacy
+            "PNEUMA_TRANSPORT_PROXY_EDGE".to_string(),
+        ],
+        TransportStealthProfile::Custom { .. } => {
+            vec!["PNEUMA_TRANSPORT_PROXY_CUSTOM".to_string()]
+        }
+    }
+}
+
+fn read_nonempty_env(key: &str) -> Option<String> {
+    let value = std::env::var(key).ok()?;
+    if value.trim().is_empty() {
+        return None;
+    }
+    Some(value)
 }
 
 fn normalize_proxy_endpoint(input: &str) -> Option<String> {
@@ -111,5 +146,13 @@ mod tests {
             parse_csv_list(" localhost, 127.0.0.1, ,example.com "),
             vec!["localhost", "127.0.0.1", "example.com"]
         );
+    }
+
+    #[test]
+    fn profile_env_keys_include_version_and_generic() {
+        let keys = profile_env_keys(&TransportStealthProfile::Chrome(120));
+        assert_eq!(keys[0], "PNEUMA_TRANSPORT_PROXY_CHROME_120");
+        assert_eq!(keys[1], "PNEUMA_TRANSPORT_PROXY_CHROME120");
+        assert_eq!(keys[2], "PNEUMA_TRANSPORT_PROXY_CHROME");
     }
 }

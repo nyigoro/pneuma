@@ -1001,6 +1001,7 @@ dependencies = [
  "pneuma-broker",
  "pneuma-engines",
  "pneuma-js",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
